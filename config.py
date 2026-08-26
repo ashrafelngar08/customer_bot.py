@@ -31,4 +31,4 @@ REFERRAL_BONUS_EGP = float(os.getenv("REFERRAL_BONUS_EGP", "10"))
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@X_XRaa")
 SUPPORT_CHANNEL = os.getenv("SUPPORT_CHANNEL", "https://t.me/AshrafMediaPro")
 
-DB_PATH = os.getenv("DB_PATH", "shop.db")
+DATABASE_URL = _require("DATABASE_URL")
