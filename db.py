@@ -2,24 +2,30 @@
 Data layer. Deliberately isolated from any Telegram/bot code so the customer
 bot and admin bot both read/write the exact same store, and so the bots can
 be restarted, redeployed, or crash without losing any customer data or
-balances. SQLite is used for simplicity; swapping to Postgres later only
-means changing this file (the ? placeholders would need to become %s, and
-the connection setup would change) - nothing in customer_bot.py or
-admin_bot.py touches SQL directly.
+balances.
+
+Uses PostgreSQL (e.g. Railway's managed Postgres) so data survives redeploys
+and restarts - unlike a local SQLite file, which lives on the container's
+ephemeral disk and gets wiped on every new deploy.
+
+A small _CursorProxy below translates the old sqlite3-style call pattern
+(conn.execute("... ? ...", params), cur.lastrowid) to psycopg2, so
+customer_bot.py and admin_bot.py did not need to change at all.
 """
-import sqlite3
 import time
 import secrets
 import contextlib
-from config import DB_PATH
+import psycopg2
+import psycopg2.extras
+from config import DATABASE_URL
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id INTEGER UNIQUE NOT NULL,
+    id SERIAL PRIMARY KEY,
+    telegram_id BIGINT UNIQUE NOT NULL,
     username TEXT,
     phone TEXT,
-    join_date INTEGER NOT NULL,
+    join_date BIGINT NOT NULL,
     lang TEXT NOT NULL DEFAULT 'ar',
     currency TEXT NOT NULL DEFAULT 'egp',
     balance REAL NOT NULL DEFAULT 0,
@@ -35,7 +41,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     name_ar TEXT NOT NULL,
     name_en TEXT NOT NULL,
     emoji TEXT NOT NULL DEFAULT '',
@@ -44,7 +50,7 @@ CREATE TABLE IF NOT EXISTS categories (
 );
 
 CREATE TABLE IF NOT EXISTS services (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     category_id INTEGER NOT NULL REFERENCES categories(id),
     name_ar TEXT NOT NULL,
     name_en TEXT NOT NULL,
@@ -58,46 +64,72 @@ CREATE TABLE IF NOT EXISTS services (
 );
 
 CREATE TABLE IF NOT EXISTS orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
     service_id INTEGER NOT NULL REFERENCES services(id),
     service_name_ar TEXT NOT NULL,
     price_egp REAL NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     email TEXT,
-    created_at INTEGER NOT NULL,
-    delivered_at INTEGER,
+    created_at BIGINT NOT NULL,
+    delivered_at BIGINT,
     note TEXT
 );
 
 CREATE TABLE IF NOT EXISTS topups (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
     method TEXT NOT NULL,
     amount REAL NOT NULL,
     reference TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
-    created_at INTEGER NOT NULL,
-    resolved_at INTEGER
+    created_at BIGINT NOT NULL,
+    resolved_at BIGINT
 );
 """
 
 
+class _CursorProxy:
+    """Makes a psycopg2 cursor behave like the sqlite3 cursor this file was
+    originally written against: '?' placeholders and a .lastrowid attribute
+    (via an explicit RETURNING id on the few inserts that need the new id)."""
+
+    def __init__(self, cursor):
+        self._cur = cursor
+        self.lastrowid = None
+
+    def execute(self, query, params=()):
+        query = query.replace("?", "%s")
+        self._cur.execute(query, params)
+        if "RETURNING" in query.upper():
+            row = self._cur.fetchone()
+            if row:
+                self.lastrowid = row["id"]
+        return self
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+
 @contextlib.contextmanager
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    cur = conn.cursor()
+    proxy = _CursorProxy(cur)
     try:
-        yield conn
+        yield proxy
         conn.commit()
     finally:
+        cur.close()
         conn.close()
 
 
 def init_db():
     with get_conn() as conn:
-        conn.executescript(SCHEMA)
+        conn.execute(SCHEMA)
         # Seed starter categories/services only on first run
         row = conn.execute("SELECT COUNT(*) c FROM categories").fetchone()
         if row["c"] == 0:
@@ -113,7 +145,7 @@ def _seed(conn):
     cat_ids = []
     for name_ar, name_en, emoji, order in cats:
         cur = conn.execute(
-            "INSERT INTO categories (name_ar, name_en, emoji, sort_order) VALUES (?,?,?,?)",
+            "INSERT INTO categories (name_ar, name_en, emoji, sort_order) VALUES (?,?,?,?) RETURNING id",
             (name_ar, name_en, emoji, order),
         )
         cat_ids.append(cur.lastrowid)
@@ -234,7 +266,7 @@ def get_category(cat_id: int):
 def add_category(name_ar, name_en, emoji=""):
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO categories (name_ar, name_en, emoji, sort_order) VALUES (?,?,?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories))",
+            "INSERT INTO categories (name_ar, name_en, emoji, sort_order) VALUES (?,?,?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories)) RETURNING id",
             (name_ar, name_en, emoji),
         )
         return cur.lastrowid
@@ -271,7 +303,7 @@ def add_service(category_id, name_ar, name_en, details_ar, details_en, price_egp
         cur = conn.execute(
             """INSERT INTO services
                (category_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email)
-               VALUES (?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?) RETURNING id""",
             (category_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email),
         )
         return cur.lastrowid
@@ -295,7 +327,7 @@ def adjust_stock(service_id: int, delta: int):
         row = conn.execute("SELECT stock FROM services WHERE id=?", (service_id,)).fetchone()
         if row is None or row["stock"] < 0:
             return  # unlimited stock, nothing to track
-        conn.execute("UPDATE services SET stock = MAX(stock + ?, 0) WHERE id=?", (delta, service_id))
+        conn.execute("UPDATE services SET stock = GREATEST(stock + ?, 0) WHERE id=?", (delta, service_id))
 
 
 # ---------------- Orders ----------------
@@ -304,7 +336,7 @@ def create_order(user_id, service_id, service_name_ar, price_egp, email=None):
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO orders (user_id, service_id, service_name_ar, price_egp, email, created_at, status)
-               VALUES (?,?,?,?,?,?, 'in_progress')""",
+               VALUES (?,?,?,?,?,?, 'in_progress') RETURNING id""",
             (user_id, service_id, service_name_ar, price_egp, email, int(time.time())),
         )
         conn.execute("UPDATE users SET total_orders = total_orders + 1, total_spent = total_spent + ? WHERE id=?",
@@ -356,7 +388,7 @@ def create_topup(user_id, method, amount, reference):
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO topups (user_id, method, amount, reference, created_at)
-               VALUES (?,?,?,?,?)""",
+               VALUES (?,?,?,?,?) RETURNING id""",
             (user_id, method, amount, reference, int(time.time())),
         )
         return cur.lastrowid
@@ -397,3 +429,4 @@ def maybe_pay_referral_bonus(referred_user_id: int, bonus_egp: float):
         )
         conn.execute("UPDATE users SET referral_bonus_paid=1 WHERE id=?", (referred_user_id,))
         return True
+
