@@ -202,14 +202,10 @@ async def show_variants(query, lang, svc_id):
     if not service or not variants:
         await respond(query, t("no_variants", lang), reply_markup=back_kb(lang, f"cat:{service['category_id']}" if service else "cats:root"))
         return
-    user = db.get_user(query.from_user.id)
     buttons = []
     for v in variants:
         name = v["name_ar"] if lang == "ar" else v["name_en"]
-        price = format_price(v["price_egp"], user["currency"])
-        label = f"{name} — {price}"
-        if v["stock"] == 0:
-            label += " ❌"
+        label = name if v["stock"] != 0 else f"{name} ❌"
         buttons.append(InlineKeyboardButton(label, callback_data=f"var:{v['id']}"))
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton(t("back", lang), callback_data=f"cat:{service['category_id']}")])
