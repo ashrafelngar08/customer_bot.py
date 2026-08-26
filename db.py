@@ -56,6 +56,23 @@ CREATE TABLE IF NOT EXISTS services (
     name_en TEXT NOT NULL,
     details_ar TEXT NOT NULL DEFAULT '',
     details_en TEXT NOT NULL DEFAULT '',
+    price_egp REAL NOT NULL DEFAULT 0,
+    stock INTEGER NOT NULL DEFAULT -1,
+    requires_email INTEGER NOT NULL DEFAULT 0,
+    hidden INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+-- A "service" above is now a *product* (e.g. "جيميناي برو"). Each product
+-- has one or more variants (e.g. "18 شهر" / "12 شهر"), and price/stock/
+-- email-requirement/buying now live on the variant, not the product.
+CREATE TABLE IF NOT EXISTS variants (
+    id SERIAL PRIMARY KEY,
+    service_id INTEGER NOT NULL REFERENCES services(id),
+    name_ar TEXT NOT NULL,
+    name_en TEXT NOT NULL,
+    details_ar TEXT NOT NULL DEFAULT '',
+    details_en TEXT NOT NULL DEFAULT '',
     price_egp REAL NOT NULL,
     stock INTEGER NOT NULL DEFAULT -1,
     requires_email INTEGER NOT NULL DEFAULT 0,
@@ -67,6 +84,7 @@ CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
     service_id INTEGER NOT NULL REFERENCES services(id),
+    variant_id INTEGER REFERENCES variants(id),
     service_name_ar TEXT NOT NULL,
     price_egp REAL NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -130,6 +148,8 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         conn.execute(SCHEMA)
+        # Migration for DBs created before the variants table existed.
+        conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS variant_id INTEGER REFERENCES variants(id)")
         # Seed starter categories/services only on first run
         row = conn.execute("SELECT COUNT(*) c FROM categories").fetchone()
         if row["c"] == 0:
@@ -168,11 +188,20 @@ def _seed(conn):
          900.0, 5, 0),
     ]
     for cat_id, nar, nen, dar, den, price, stock, req_email in services:
+        cur = conn.execute(
+            "INSERT INTO services (category_id, name_ar, name_en) VALUES (?,?,?) RETURNING id",
+            (cat_id, nar, nen),
+        )
+        service_id = cur.lastrowid
+        # Every product needs at least one variant to be purchasable - seed a
+        # single default variant ("عام"/"General") carrying over the old
+        # flat price/stock/details, so admins can then add more variants
+        # (e.g. different durations) alongside it.
         conn.execute(
-            """INSERT INTO services
-               (category_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email)
+            """INSERT INTO variants
+               (service_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email)
                VALUES (?,?,?,?,?,?,?,?)""",
-            (cat_id, nar, nen, dar, den, price, stock, req_email),
+            (service_id, "عام", "General", dar, den, price, stock, req_email),
         )
 
 
@@ -298,7 +327,10 @@ def get_service(service_id: int):
         return dict(row) if row else None
 
 
-def add_service(category_id, name_ar, name_en, details_ar, details_en, price_egp, stock=-1, requires_email=0):
+def add_service(category_id, name_ar, name_en, details_ar="", details_en="", price_egp=0, stock=-1, requires_email=0):
+    """Adds a *product*. Price/stock/email fields are accepted for backward
+    compatibility but purchasing now happens through the product's variants
+    (see add_variant) - a product needs at least one variant to be buyable."""
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO services
@@ -311,6 +343,7 @@ def add_service(category_id, name_ar, name_en, details_ar, details_en, price_egp
 
 def delete_service(service_id: int):
     with get_conn() as conn:
+        conn.execute("DELETE FROM variants WHERE service_id=?", (service_id,))
         conn.execute("DELETE FROM services WHERE id=?", (service_id,))
 
 
@@ -330,14 +363,63 @@ def adjust_stock(service_id: int, delta: int):
         conn.execute("UPDATE services SET stock = GREATEST(stock + ?, 0) WHERE id=?", (delta, service_id))
 
 
-# ---------------- Orders ----------------
+# ---------------- Variants (durations / options under a product) ----------------
 
-def create_order(user_id, service_id, service_name_ar, price_egp, email=None):
+def list_variants(service_id: int, include_hidden=False):
+    with get_conn() as conn:
+        q = "SELECT * FROM variants WHERE service_id=?"
+        if not include_hidden:
+            q += " AND hidden=0"
+        q += " ORDER BY sort_order, id"
+        return [dict(r) for r in conn.execute(q, (service_id,)).fetchall()]
+
+
+def get_variant(variant_id: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM variants WHERE id=?", (variant_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def add_variant(service_id, name_ar, name_en, details_ar, details_en, price_egp, stock=-1, requires_email=0):
     with get_conn() as conn:
         cur = conn.execute(
-            """INSERT INTO orders (user_id, service_id, service_name_ar, price_egp, email, created_at, status)
-               VALUES (?,?,?,?,?,?, 'in_progress') RETURNING id""",
-            (user_id, service_id, service_name_ar, price_egp, email, int(time.time())),
+            """INSERT INTO variants
+               (service_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email)
+               VALUES (?,?,?,?,?,?,?,?) RETURNING id""",
+            (service_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email),
+        )
+        return cur.lastrowid
+
+
+def delete_variant(variant_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM variants WHERE id=?", (variant_id,))
+
+
+def update_variant_field(variant_id: int, field: str, value):
+    allowed = {"name_ar", "name_en", "details_ar", "details_en", "price_egp", "stock", "requires_email", "hidden"}
+    if field not in allowed:
+        raise ValueError("field not allowed")
+    with get_conn() as conn:
+        conn.execute(f"UPDATE variants SET {field}=? WHERE id=?", (value, variant_id))
+
+
+def adjust_variant_stock(variant_id: int, delta: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT stock FROM variants WHERE id=?", (variant_id,)).fetchone()
+        if row is None or row["stock"] < 0:
+            return  # unlimited stock, nothing to track
+        conn.execute("UPDATE variants SET stock = GREATEST(stock + ?, 0) WHERE id=?", (delta, variant_id))
+
+
+# ---------------- Orders ----------------
+
+def create_order(user_id, service_id, variant_id, service_name_ar, price_egp, email=None):
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO orders (user_id, service_id, variant_id, service_name_ar, price_egp, email, created_at, status)
+               VALUES (?,?,?,?,?,?,?, 'in_progress') RETURNING id""",
+            (user_id, service_id, variant_id, service_name_ar, price_egp, email, int(time.time())),
         )
         conn.execute("UPDATE users SET total_orders = total_orders + 1, total_spent = total_spent + ? WHERE id=?",
                      (price_egp, user_id))
@@ -429,4 +511,3 @@ def maybe_pay_referral_bonus(referred_user_id: int, bonus_egp: float):
         )
         conn.execute("UPDATE users SET referral_bonus_paid=1 WHERE id=?", (referred_user_id,))
         return True
-
