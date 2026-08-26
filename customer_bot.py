@@ -180,14 +180,10 @@ async def show_services(query, lang, cat_id):
     if not services:
         await respond(query, t("no_services", lang), reply_markup=back_kb(lang, "cats:root"))
         return
-    user = db.get_user(query.from_user.id)
     buttons = []
     for s in services:
         name = s["name_ar"] if lang == "ar" else s["name_en"]
-        price = format_price(s["price_egp"], user["currency"])
-        label = f"{name} — {price}"
-        if s["stock"] == 0:
-            label += " ❌"
+        label = name if s["stock"] != 0 else f"{name} ❌"
         buttons.append(InlineKeyboardButton(label, callback_data=f"svc:{s['id']}"))
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton(t("back", lang), callback_data="cats:root")])
