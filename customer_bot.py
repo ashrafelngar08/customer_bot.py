@@ -131,11 +131,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("svc:"):
         svc_id = int(data.split(":")[1])
-        await show_service_detail(query, lang, user, svc_id)
+        await show_variants(query, lang, svc_id)
+
+    elif data.startswith("var:"):
+        variant_id = int(data.split(":")[1])
+        await show_variant_detail(query, lang, user, variant_id)
 
     elif data.startswith("buy:"):
-        svc_id = int(data.split(":")[1])
-        await handle_buy(query, context, lang, user, svc_id)
+        variant_id = int(data.split(":")[1])
+        await handle_buy(query, context, lang, user, variant_id)
 
     elif data.startswith("setcur:"):
         cur = data.split(":")[1]
@@ -190,58 +194,86 @@ async def show_services(query, lang, cat_id):
     await query.edit_message_text(t("choose_service", lang), reply_markup=InlineKeyboardMarkup(rows))
 
 
-async def show_service_detail(query, lang, user, svc_id):
-    s = db.get_service(svc_id)
-    if not s:
-        await respond(query, t("no_services", lang), reply_markup=back_kb(lang, "cats:root"))
+async def show_variants(query, lang, svc_id):
+    """Shows the list of variants (durations/options) under a product -
+    e.g. product 'جيميناي برو' -> variants '18 شهر' / '12 شهر'."""
+    service = db.get_service(svc_id)
+    variants = db.list_variants(svc_id)
+    if not service or not variants:
+        await respond(query, t("no_variants", lang), reply_markup=back_kb(lang, f"cat:{service['category_id']}" if service else "cats:root"))
         return
-    name = s["name_ar"] if lang == "ar" else s["name_en"]
-    details = s["details_ar"] if lang == "ar" else s["details_en"]
-    price = format_price(s["price_egp"], user["currency"])
+    user = db.get_user(query.from_user.id)
+    buttons = []
+    for v in variants:
+        name = v["name_ar"] if lang == "ar" else v["name_en"]
+        price = format_price(v["price_egp"], user["currency"])
+        label = f"{name} — {price}"
+        if v["stock"] == 0:
+            label += " ❌"
+        buttons.append(InlineKeyboardButton(label, callback_data=f"var:{v['id']}"))
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton(t("back", lang), callback_data=f"cat:{service['category_id']}")])
+    await query.edit_message_text(t("choose_variant", lang), reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def show_variant_detail(query, lang, user, variant_id):
+    v = db.get_variant(variant_id)
+    if not v:
+        await respond(query, t("no_variants", lang), reply_markup=back_kb(lang, "cats:root"))
+        return
+    service = db.get_service(v["service_id"])
+    product_name = service["name_ar"] if lang == "ar" else service["name_en"]
+    variant_name = v["name_ar"] if lang == "ar" else v["name_en"]
+    name = f"{product_name} — {variant_name}"
+    details = v["details_ar"] if lang == "ar" else v["details_en"]
+    price = format_price(v["price_egp"], user["currency"])
     text = t("service_details", lang, name=name, details=details, price=price)
     rows = []
-    if s["stock"] != 0:
-        rows.append([InlineKeyboardButton(t("buy", lang), callback_data=f"buy:{s['id']}")])
+    if v["stock"] != 0:
+        rows.append([InlineKeyboardButton(t("buy", lang), callback_data=f"buy:{v['id']}")])
     else:
         text += "\n\n" + t("out_of_stock", lang)
-    rows.append([InlineKeyboardButton(t("back", lang), callback_data=f"cat:{s['category_id']}")])
+    rows.append([InlineKeyboardButton(t("back", lang), callback_data=f"svc:{v['service_id']}")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
 
 
-async def handle_buy(query, context, lang, user, svc_id):
-    s = db.get_service(svc_id)
-    if not s or s["hidden"]:
-        await respond(query, t("no_services", lang), reply_markup=back_kb(lang, "cats:root"))
+async def handle_buy(query, context, lang, user, variant_id):
+    v = db.get_variant(variant_id)
+    if not v or v["hidden"]:
+        await respond(query, t("no_variants", lang), reply_markup=back_kb(lang, "cats:root"))
         return
-    if s["stock"] == 0:
+    if v["stock"] == 0:
         await query.answer(t("out_of_stock", lang), show_alert=True)
         return
-    if user["balance"] < s["price_egp"]:
+    if user["balance"] < v["price_egp"]:
         bal = format_price(user["balance"], user["currency"])
-        price = format_price(s["price_egp"], user["currency"])
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data=f"svc:{svc_id}")]])
+        price = format_price(v["price_egp"], user["currency"])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data=f"var:{variant_id}")]])
         await query.edit_message_text(
             t("insufficient_balance", lang, balance=bal, price=price) + "\n\n" + MENU_LABELS["topup"][lang],
             reply_markup=kb,
         )
         return
 
-    if s["requires_email"]:
-        context.user_data["awaiting"] = ("email", svc_id)
-        await query.edit_message_text(t("ask_email", lang), reply_markup=back_kb(lang, f"svc:{svc_id}"))
+    if v["requires_email"]:
+        context.user_data["awaiting"] = ("email", variant_id)
+        await query.edit_message_text(t("ask_email", lang), reply_markup=back_kb(lang, f"var:{variant_id}"))
         return
 
-    await finalize_order(query, context, lang, user, s, email=None)
+    await finalize_order(query, context, lang, user, v, email=None)
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-async def finalize_order(target, context, lang, user, service, email=None):
-    """target can be a CallbackQuery or an Update.message-like object."""
-    db.adjust_balance(user["id"], -service["price_egp"])
-    db.adjust_stock(service["id"], -1)
-    order_id = db.create_order(user["id"], service["id"], service["name_ar"], service["price_egp"], email)
+async def finalize_order(target, context, lang, user, variant, email=None):
+    """target can be a CallbackQuery or an Update.message-like object.
+    variant is a row from the variants table (what's actually purchased)."""
+    service = db.get_service(variant["service_id"])
+    db.adjust_balance(user["id"], -variant["price_egp"])
+    db.adjust_variant_stock(variant["id"], -1)
+    full_name_ar = f"{service['name_ar']} — {variant['name_ar']}"
+    order_id = db.create_order(user["id"], service["id"], variant["id"], full_name_ar, variant["price_egp"], email)
 
     # Pay referral bonus if this is the referred user's first order
     if db.maybe_pay_referral_bonus(user["id"], config.REFERRAL_BONUS_EGP):
@@ -257,24 +289,24 @@ async def finalize_order(target, context, lang, user, service, email=None):
             except TelegramError:
                 pass
 
-    name = service["name_ar"] if lang == "ar" else service["name_en"]
+    full_name = f"{service['name_ar'] if lang == 'ar' else service['name_en']} — {variant['name_ar'] if lang == 'ar' else variant['name_en']}"
     fresh_user = db.get_user_by_id(user["id"])
-    price = format_price(service["price_egp"], fresh_user["currency"])
-    text = t("order_placed", lang, name=name, price=price, order_id=order_id)
+    price = format_price(variant["price_egp"], fresh_user["currency"])
+    text = t("order_placed", lang, name=full_name, price=price, order_id=order_id)
     await respond(target, text)
 
     # Notify admin bot so it can be delivered / actioned
-    await notify_admin_new_order(context, fresh_user, service, order_id, email)
+    await notify_admin_new_order(context, fresh_user, service, variant, order_id, email)
 
 
-async def notify_admin_new_order(context, user, service, order_id, email):
+async def notify_admin_new_order(context, user, service, variant, order_id, email):
     from telegram import Bot
     admin_bot = Bot(token=config.ADMIN_BOT_TOKEN)
     lines = [
         f"🆕 طلب جديد #{order_id}",
         f"👤 العميل: {user['telegram_id']} (@{user['username']})",
-        f"📦 الخدمة: {service['name_ar']}",
-        f"💵 السعر: {service['price_egp']:.2f} EGP",
+        f"📦 الخدمة: {service['name_ar']} — {variant['name_ar']}",
+        f"💵 السعر: {variant['price_egp']:.2f} EGP",
     ]
     if email:
         lines.append(f"📧 الإيميل: {email}")
@@ -345,17 +377,17 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kind = awaiting[0]
 
         if kind == "email":
-            svc_id = awaiting[1]
+            variant_id = awaiting[1]
             email = text_in
             if not EMAIL_RE.match(email):
                 await update.message.reply_text(t("invalid_email", lang))
                 return
-            service = db.get_service(svc_id)
-            if not service:
+            variant = db.get_variant(variant_id)
+            if not variant:
                 context.user_data.pop("awaiting", None)
                 return
             context.user_data.pop("awaiting", None)
-            await finalize_order(update.message, context, lang, user, service, email=email)
+            await finalize_order(update.message, context, lang, user, variant, email=email)
             return
 
         elif kind == "topup":
