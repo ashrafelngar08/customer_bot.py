@@ -2,7 +2,10 @@ import logging
 import re
 from datetime import datetime
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import (
+    Update, InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton,
+)
 from telegram.ext import (
     ApplicationBuilder, ContextTypes, CommandHandler,
     CallbackQueryHandler, MessageHandler, filters,
@@ -25,32 +28,59 @@ STATUS_KEY = {
     "refunded": "status_refunded",
 }
 
+# ---------------- Persistent bottom menu (Reply Keyboard) ----------------
+# This is the always-visible menu under the message box, like a normal
+# storefront bot - not attached to any single message, unlike inline
+# keyboards. Each button just sends its label as plain text, which on_text
+# below recognizes and routes to the right screen.
 
-def main_menu_kb(lang):
+MENU_LABELS = {
+    "services": {"ar": "🛒 الخدمات", "en": "🛒 Services"},
+    "profile": {"ar": "⚙️ حسابي", "en": "⚙️ My Account"},
+    "orders": {"ar": "📋 طلباتي", "en": "📋 My Orders"},
+    "balance": {"ar": "💰 رصيدي", "en": "💰 My Balance"},
+    "topup": {"ar": "💳 إضافة رصيد", "en": "💳 Add Balance"},
+    "support": {"ar": "📞 الدعم", "en": "📞 Support"},
+    "currency": {"ar": "💱 تحويل العملات", "en": "💱 Currency"},
+    "lang": {"ar": "🌐 اللغة", "en": "🌐 Language"},
+    "referral": {"ar": "💸 الربح عبر الدعوة", "en": "💸 Earn via Referral"},
+}
+
+# text -> action, built for both languages so a switch mid-session still matches
+MENU_LOOKUP = {}
+for _action, _labels in MENU_LABELS.items():
+    for _lang_code, _label in _labels.items():
+        MENU_LOOKUP[_label] = _action
+
+
+def main_reply_keyboard(lang) -> ReplyKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(t("menu_services", lang), callback_data="menu:services")],
-        [InlineKeyboardButton(t("menu_orders", lang), callback_data="menu:orders"),
-         InlineKeyboardButton(t("menu_balance", lang), callback_data="menu:balance")],
-        [InlineKeyboardButton(t("menu_topup", lang), callback_data="menu:topup"),
-         InlineKeyboardButton(t("menu_currency", lang), callback_data="menu:currency")],
-        [InlineKeyboardButton(t("menu_referral", lang), callback_data="menu:referral"),
-         InlineKeyboardButton(t("menu_profile", lang), callback_data="menu:profile")],
-        [InlineKeyboardButton(t("menu_lang", lang), callback_data="menu:lang"),
-         InlineKeyboardButton(t("menu_support", lang), callback_data="menu:support")],
+        [KeyboardButton(MENU_LABELS["services"][lang]), KeyboardButton(MENU_LABELS["profile"][lang])],
+        [KeyboardButton(MENU_LABELS["orders"][lang]), KeyboardButton(MENU_LABELS["balance"][lang])],
+        [KeyboardButton(MENU_LABELS["topup"][lang]), KeyboardButton(MENU_LABELS["support"][lang])],
+        [KeyboardButton(MENU_LABELS["currency"][lang]), KeyboardButton(MENU_LABELS["lang"][lang])],
+        [KeyboardButton(MENU_LABELS["referral"][lang])],
     ]
-    return InlineKeyboardMarkup(rows)
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
-def back_kb(lang, back_to="menu:main"):
+def back_kb(lang, back_to=None):
+    """Inline back button used only inside multi-step flows (categories ->
+    services -> service detail, currency choice, language choice, topup
+    method). The persistent bottom menu handles top-level navigation, so
+    this never needs a 'back to main' target."""
+    if back_to is None:
+        return None
     return InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data=back_to)]])
 
 
-async def send_main_menu(target, lang, edit=False):
-    text = t("welcome", lang)
-    if edit:
-        await target.edit_message_text(text, reply_markup=main_menu_kb(lang))
+async def respond(target, text, reply_markup=None, **kwargs):
+    """target is either a CallbackQuery (edit in place) or an
+    Update.message-like object (send a fresh message)."""
+    if hasattr(target, "edit_message_text"):
+        await target.edit_message_text(text, reply_markup=reply_markup, **kwargs)
     else:
-        await target.reply_text(text, reply_markup=main_menu_kb(lang))
+        await target.reply_text(text, reply_markup=reply_markup, **kwargs)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -62,7 +92,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user["banned"]:
         await update.message.reply_text(t("banned", user["lang"]))
         return
-    await send_main_menu(update.message, user["lang"])
+    lang = user["lang"]
+    await update.message.reply_text(t("welcome", lang), reply_markup=main_reply_keyboard(lang))
 
 
 async def guard_banned(update, user) -> bool:
@@ -77,6 +108,10 @@ async def guard_banned(update, user) -> bool:
     return False
 
 
+# ---------------- Inline callbacks: category/service browsing, currency,
+# language, top-up method choice. All of these live inside a specific bot
+# message, so they stay inline (that's what inline keyboards are for).
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     tg_user = update.effective_user
@@ -87,10 +122,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     await query.answer()
 
-    if data == "menu:main":
-        await send_main_menu(query, lang, edit=True)
-
-    elif data == "menu:services":
+    if data == "cats:root":
         await show_categories(query, lang)
 
     elif data.startswith("cat:"):
@@ -105,30 +137,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         svc_id = int(data.split(":")[1])
         await handle_buy(query, context, lang, user, svc_id)
 
-    elif data == "menu:orders":
-        await show_orders(query, lang, user)
-
-    elif data == "menu:currency":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(t("egp", lang), callback_data="setcur:egp"),
-             InlineKeyboardButton(t("usd", lang), callback_data="setcur:usd")],
-            [InlineKeyboardButton(t("back", lang), callback_data="menu:main")],
-        ])
-        await query.edit_message_text(t("currency_title", lang), reply_markup=kb)
-
     elif data.startswith("setcur:"):
         cur = data.split(":")[1]
         db.set_currency(tg_user.id, cur)
         cur_label = t("egp", lang) if cur == "egp" else t("usd", lang)
-        await query.edit_message_text(t("currency_saved", lang, cur=cur_label), reply_markup=back_kb(lang))
-
-    elif data == "menu:topup":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Vodafone Cash 💵", callback_data="topup:vf")],
-            [InlineKeyboardButton("Binance Pay 💰", callback_data="topup:bp")],
-            [InlineKeyboardButton(t("back", lang), callback_data="menu:main")],
-        ])
-        await query.edit_message_text(t("topup_title", lang), reply_markup=kb)
+        await query.edit_message_text(t("currency_saved", lang, cur=cur_label))
 
     elif data.startswith("topup:"):
         method = data.split(":")[1]
@@ -137,53 +150,34 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = t("vf_instructions", lang, number=config.VODAFONE_CASH_NUMBER)
         else:
             text = t("bp_instructions", lang, bid=config.BINANCE_PAY_ID)
-        await query.edit_message_text(text, reply_markup=back_kb(lang), parse_mode=ParseMode.MARKDOWN)
-
-    elif data == "menu:balance":
-        bal = format_price(user["balance"], user["currency"])
-        await query.edit_message_text(t("balance_title", lang, balance=bal), reply_markup=back_kb(lang))
-
-    elif data == "menu:lang":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🇪🇬 العربية", callback_data="setlang:ar"),
-             InlineKeyboardButton("🇬🇧 English", callback_data="setlang:en")],
-            [InlineKeyboardButton(t("back", lang), callback_data="menu:main")],
-        ])
-        await query.edit_message_text(t("lang_title", lang), reply_markup=kb)
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
 
     elif data.startswith("setlang:"):
         new_lang = data.split(":")[1]
         db.set_lang(tg_user.id, new_lang)
-        await query.edit_message_text(t("lang_saved", new_lang), reply_markup=back_kb(new_lang))
-
-    elif data == "menu:profile":
-        await show_profile(query, lang, user)
-
-    elif data == "menu:referral":
-        await show_referral(query, context, lang, user)
-
-    elif data == "menu:support":
-        text = t("support_title", lang, user=config.SUPPORT_USERNAME, channel=config.SUPPORT_CHANNEL)
-        await query.edit_message_text(text, reply_markup=back_kb(lang))
+        await query.edit_message_text(t("lang_saved", new_lang))
+        # Bottom keyboard also needs to switch language - resend it
+        await context.bot.send_message(
+            tg_user.id, t("welcome", new_lang), reply_markup=main_reply_keyboard(new_lang)
+        )
 
 
-async def show_categories(query, lang):
+async def show_categories(target, lang):
     cats = db.list_categories()
     if not cats:
-        await query.edit_message_text(t("no_categories", lang), reply_markup=back_kb(lang))
+        await respond(target, t("no_categories", lang))
         return
     rows = []
     for c in cats:
         name = c["name_ar"] if lang == "ar" else c["name_en"]
         rows.append([InlineKeyboardButton(f"{c['emoji']} {name}".strip(), callback_data=f"cat:{c['id']}")])
-    rows.append([InlineKeyboardButton(t("back", lang), callback_data="menu:main")])
-    await query.edit_message_text(t("choose_category", lang), reply_markup=InlineKeyboardMarkup(rows))
+    await respond(target, t("choose_category", lang), reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def show_services(query, lang, cat_id):
     services = db.list_services(cat_id)
     if not services:
-        await query.edit_message_text(t("no_services", lang), reply_markup=back_kb(lang, "menu:services"))
+        await respond(query, t("no_services", lang), reply_markup=back_kb(lang, "cats:root"))
         return
     user = db.get_user(query.from_user.id)
     rows = []
@@ -194,14 +188,14 @@ async def show_services(query, lang, cat_id):
         if s["stock"] == 0:
             label += " ❌"
         rows.append([InlineKeyboardButton(label, callback_data=f"svc:{s['id']}")])
-    rows.append([InlineKeyboardButton(t("back", lang), callback_data="menu:services")])
+    rows.append([InlineKeyboardButton(t("back", lang), callback_data="cats:root")])
     await query.edit_message_text(t("choose_service", lang), reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def show_service_detail(query, lang, user, svc_id):
     s = db.get_service(svc_id)
     if not s:
-        await query.edit_message_text(t("no_services", lang), reply_markup=back_kb(lang, "menu:services"))
+        await respond(query, t("no_services", lang), reply_markup=back_kb(lang, "cats:root"))
         return
     name = s["name_ar"] if lang == "ar" else s["name_en"]
     details = s["details_ar"] if lang == "ar" else s["details_en"]
@@ -219,7 +213,7 @@ async def show_service_detail(query, lang, user, svc_id):
 async def handle_buy(query, context, lang, user, svc_id):
     s = db.get_service(svc_id)
     if not s or s["hidden"]:
-        await query.edit_message_text(t("no_services", lang), reply_markup=back_kb(lang, "menu:services"))
+        await respond(query, t("no_services", lang), reply_markup=back_kb(lang, "cats:root"))
         return
     if s["stock"] == 0:
         await query.answer(t("out_of_stock", lang), show_alert=True)
@@ -227,12 +221,10 @@ async def handle_buy(query, context, lang, user, svc_id):
     if user["balance"] < s["price_egp"]:
         bal = format_price(user["balance"], user["currency"])
         price = format_price(s["price_egp"], user["currency"])
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(t("menu_topup", lang), callback_data="menu:topup")],
-            [InlineKeyboardButton(t("back", lang), callback_data=f"svc:{svc_id}")],
-        ])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data=f"svc:{svc_id}")]])
         await query.edit_message_text(
-            t("insufficient_balance", lang, balance=bal, price=price), reply_markup=kb
+            t("insufficient_balance", lang, balance=bal, price=price) + "\n\n" + MENU_LABELS["topup"][lang],
+            reply_markup=kb,
         )
         return
 
@@ -248,7 +240,7 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 async def finalize_order(target, context, lang, user, service, email=None):
-    """target can be a CallbackQuery or an Update.message-like object with reply_text."""
+    """target can be a CallbackQuery or an Update.message-like object."""
     db.adjust_balance(user["id"], -service["price_egp"])
     db.adjust_stock(service["id"], -1)
     order_id = db.create_order(user["id"], service["id"], service["name_ar"], service["price_egp"], email)
@@ -271,11 +263,7 @@ async def finalize_order(target, context, lang, user, service, email=None):
     fresh_user = db.get_user_by_id(user["id"])
     price = format_price(service["price_egp"], fresh_user["currency"])
     text = t("order_placed", lang, name=name, price=price, order_id=order_id)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(t("main_menu", lang), callback_data="menu:main")]])
-    if hasattr(target, "edit_message_text"):
-        await target.edit_message_text(text, reply_markup=kb)
-    else:
-        await target.reply_text(text, reply_markup=kb)
+    await respond(target, text)
 
     # Notify admin bot so it can be delivered / actioned
     await notify_admin_new_order(context, fresh_user, service, order_id, email)
@@ -303,10 +291,10 @@ async def notify_admin_new_order(context, user, service, order_id, email):
         log.error("Failed to notify admin bot of new order: %s", e)
 
 
-async def show_orders(query, lang, user):
+async def show_orders(target, lang, user):
     orders = db.list_orders_for_user(user["id"])
     if not orders:
-        await query.edit_message_text(t("no_orders", lang), reply_markup=back_kb(lang))
+        await respond(target, t("no_orders", lang))
         return
     lines = [t("orders_title", lang), ""]
     for o in orders:
@@ -314,10 +302,10 @@ async def show_orders(query, lang, user):
         price = format_price(o["price_egp"], user["currency"])
         status = t(STATUS_KEY.get(o["status"], "status_pending"), lang)
         lines.append(t("order_line", lang, id=o["id"], name=o["service_name_ar"], date=date, price=price, status=status))
-    await query.edit_message_text("\n".join(lines), reply_markup=back_kb(lang))
+    await respond(target, "\n".join(lines))
 
 
-async def show_profile(query, lang, user):
+async def show_profile(target, lang, user):
     joined = datetime.fromtimestamp(user["join_date"]).strftime("%Y-%m-%d")
     currency_label = t("egp", lang) if user["currency"] == "egp" else t("usd", lang)
     text = t(
@@ -332,14 +320,14 @@ async def show_profile(query, lang, user):
         balance=format_price(user["balance"], user["currency"]),
         ref_earnings=format_price(user["referral_earnings"], user["currency"]),
     )
-    await query.edit_message_text(text, reply_markup=back_kb(lang))
+    await respond(target, text)
 
 
-async def show_referral(query, context, lang, user):
+async def show_referral(target, context, lang, user):
     me = await context.bot.get_me()
     link = f"https://t.me/{me.username}?start={user['referral_code']}"
     text = t("referral_title", lang, bonus=f"{config.REFERRAL_BONUS_EGP:.0f} EGP", count=user["referral_count"], link=link)
-    await query.edit_message_text(text, reply_markup=back_kb(lang), disable_web_page_preview=True)
+    await respond(target, text, disable_web_page_preview=True)
 
 
 TOPUP_RE = re.compile(r"^\s*(\S+)\s+([0-9]+(?:\.[0-9]+)?)\s*$")
@@ -351,38 +339,78 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await guard_banned(update, user):
         return
     lang = user["lang"]
+    text_in = update.message.text.strip()
     awaiting = context.user_data.get("awaiting")
-    if not awaiting:
-        await send_main_menu(update.message, lang)
-        return
 
-    kind = awaiting[0]
+    # Step 1: are we mid-flow waiting for a specific free-text reply?
+    if awaiting:
+        kind = awaiting[0]
 
-    if kind == "email":
-        svc_id = awaiting[1]
-        email = update.message.text.strip()
-        if not EMAIL_RE.match(email):
-            await update.message.reply_text(t("invalid_email", lang))
-            return
-        service = db.get_service(svc_id)
-        if not service:
+        if kind == "email":
+            svc_id = awaiting[1]
+            email = text_in
+            if not EMAIL_RE.match(email):
+                await update.message.reply_text(t("invalid_email", lang))
+                return
+            service = db.get_service(svc_id)
+            if not service:
+                context.user_data.pop("awaiting", None)
+                return
             context.user_data.pop("awaiting", None)
+            await finalize_order(update.message, context, lang, user, service, email=email)
             return
-        context.user_data.pop("awaiting", None)
-        await finalize_order(update.message, context, lang, user, service, email=email)
 
-    elif kind == "topup":
-        method = awaiting[1]
-        m = TOPUP_RE.match(update.message.text)
-        if not m:
-            await update.message.reply_text(t("topup_bad_format", lang))
+        elif kind == "topup":
+            method = awaiting[1]
+            m = TOPUP_RE.match(text_in)
+            if not m:
+                await update.message.reply_text(t("topup_bad_format", lang))
+                return
+            reference, amount_str = m.group(1), m.group(2)
+            amount = float(amount_str)
+            context.user_data.pop("awaiting", None)
+            topup_id = db.create_topup(user["id"], method, amount, reference)
+            await update.message.reply_text(t("topup_submitted", lang))
+            await notify_admin_new_topup(context, user, method, amount, reference, topup_id)
             return
-        reference, amount_str = m.group(1), m.group(2)
-        amount = float(amount_str)
-        context.user_data.pop("awaiting", None)
-        topup_id = db.create_topup(user["id"], method, amount, reference)
-        await update.message.reply_text(t("topup_submitted", lang), reply_markup=back_kb(lang))
-        await notify_admin_new_topup(context, user, method, amount, reference, topup_id)
+
+    # Step 2: is this one of the persistent bottom-menu buttons?
+    action = MENU_LOOKUP.get(text_in)
+    if action == "services":
+        await show_categories(update.message, lang)
+    elif action == "profile":
+        await show_profile(update.message, lang, user)
+    elif action == "orders":
+        await show_orders(update.message, lang, user)
+    elif action == "balance":
+        bal = format_price(user["balance"], user["currency"])
+        await update.message.reply_text(t("balance_title", lang, balance=bal))
+    elif action == "topup":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Vodafone Cash 💵", callback_data="topup:vf")],
+            [InlineKeyboardButton("Binance Pay 💰", callback_data="topup:bp")],
+        ])
+        await update.message.reply_text(t("topup_title", lang), reply_markup=kb)
+    elif action == "support":
+        text = t("support_title", lang, user=config.SUPPORT_USERNAME, channel=config.SUPPORT_CHANNEL)
+        await update.message.reply_text(text)
+    elif action == "currency":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(t("egp", lang), callback_data="setcur:egp"),
+             InlineKeyboardButton(t("usd", lang), callback_data="setcur:usd")],
+        ])
+        await update.message.reply_text(t("currency_title", lang), reply_markup=kb)
+    elif action == "lang":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🇪🇬 العربية", callback_data="setlang:ar"),
+             InlineKeyboardButton("🇬🇧 English", callback_data="setlang:en")],
+        ])
+        await update.message.reply_text(t("lang_title", lang), reply_markup=kb)
+    elif action == "referral":
+        await show_referral(update.message, context, lang, user)
+    else:
+        # Unrecognized free text - just resurface the bottom menu
+        await update.message.reply_text(t("welcome", lang), reply_markup=main_reply_keyboard(lang))
 
 
 async def notify_admin_new_topup(context, user, method, amount, reference, topup_id):
