@@ -7,6 +7,7 @@ from telegram.ext import (
     CallbackQueryHandler, MessageHandler, filters,
 )
 from telegram.error import TelegramError
+from deep_translator import GoogleTranslator
 
 import config
 import db
@@ -23,6 +24,15 @@ def only_admin(func):
             return
         return await func(update, context)
     return wrapper
+
+
+def translate_to_english(text: str) -> str:
+    """Auto-translate Arabic text to English; falls back to the original text if translation fails."""
+    try:
+        return GoogleTranslator(source="ar", target="en").translate(text)
+    except Exception as e:
+        log.error("Translation failed, using original text as fallback: %s", e)
+        return text
 
 
 def main_kb():
@@ -86,11 +96,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("svc:add:"):
         cat_id = int(data.split(":")[2])
-        context.user_data["awaiting"] = ("add_service", cat_id)
-        await query.edit_message_text(
-            "أرسل بيانات الخدمة الجديدة بالشكل (كل بند في سطر):\n"
-            "الاسم بالعربي\nName in English\nتفاصيل بالعربي\nDetails in English\nالسعر بالجنيه\nالكمية (اكتب -1 لغير محدود)\nيتطلب إيميل؟ (نعم/لا)"
-        )
+        context.user_data["awaiting"] = ("add_service_name", cat_id)
+        await query.edit_message_text("أرسل اسم الخدمة بالعربي:")
 
     elif data.startswith("svc:view:"):
         svc_id = int(data.split(":")[2])
@@ -376,21 +383,46 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.add_category(name_ar, name_en, emoji)
         await update.message.reply_text(f"✅ تم إضافة الصنف: {name_ar}")
 
-    elif kind == "add_service":
+    elif kind == "add_service_name":
         cat_id = awaiting[1]
-        context.user_data.pop("awaiting", None)
-        lines = [l.strip() for l in text.split("\n")]
-        if len(lines) < 7:
-            await update.message.reply_text("⚠️ لازم تبعت 7 أسطر بالترتيب المطلوب، حاول تاني.")
-            return
-        name_ar, name_en, details_ar, details_en, price_s, stock_s, req_s = lines[:7]
+        name_ar = text
+        context.user_data["awaiting"] = ("add_service_details", cat_id, name_ar)
+        await update.message.reply_text("أرسل تفاصيل الخدمة بالعربي:")
+
+    elif kind == "add_service_details":
+        cat_id, name_ar = awaiting[1], awaiting[2]
+        details_ar = text
+        context.user_data["awaiting"] = ("add_service_price", cat_id, name_ar, details_ar)
+        await update.message.reply_text("أرسل السعر بالجنيه:")
+
+    elif kind == "add_service_price":
+        cat_id, name_ar, details_ar = awaiting[1], awaiting[2], awaiting[3]
         try:
-            price = float(price_s)
-            stock = int(stock_s)
+            price = float(text)
         except ValueError:
-            await update.message.reply_text("⚠️ السعر أو الكمية مش أرقام صحيحة.")
+            await update.message.reply_text("⚠️ من فضلك أرسل رقم صحيح للسعر.")
             return
-        requires_email = 1 if req_s.strip() in ("نعم", "yes", "Yes", "y") else 0
+        context.user_data["awaiting"] = ("add_service_stock", cat_id, name_ar, details_ar, price)
+        await update.message.reply_text("أرسل الكمية (اكتب -1 لغير محدود):")
+
+    elif kind == "add_service_stock":
+        cat_id, name_ar, details_ar, price = awaiting[1], awaiting[2], awaiting[3], awaiting[4]
+        try:
+            stock = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ من فضلك أرسل رقم صحيح للكمية.")
+            return
+        context.user_data["awaiting"] = ("add_service_email", cat_id, name_ar, details_ar, price, stock)
+        await update.message.reply_text("يتطلب إيميل؟ (نعم/لا)")
+
+    elif kind == "add_service_email":
+        cat_id, name_ar, details_ar, price, stock = (
+            awaiting[1], awaiting[2], awaiting[3], awaiting[4], awaiting[5]
+        )
+        context.user_data.pop("awaiting", None)
+        requires_email = 1 if text.strip() in ("نعم", "yes", "Yes", "y", "Y") else 0
+        name_en = translate_to_english(name_ar)
+        details_en = translate_to_english(details_ar)
         db.add_service(cat_id, name_ar, name_en, details_ar, details_en, price, stock, requires_email)
         await update.message.reply_text(f"✅ تم إضافة الخدمة: {name_ar}")
 
