@@ -21,6 +21,8 @@ STRINGS = {
     "no_categories": {"ar": "لا توجد أصناف متاحة حاليًا.", "en": "No categories available right now."},
     "choose_service": {"ar": "اختر الخدمة:", "en": "Choose a service:"},
     "no_services": {"ar": "لا توجد خدمات في هذا الصنف حاليًا.", "en": "No services in this category yet."},
+    "choose_variant": {"ar": "اختر المدة/النسخة:", "en": "Choose an option:"},
+    "no_variants": {"ar": "لا توجد نسخ متاحة لهذه الخدمة حاليًا.", "en": "No options available for this service yet."},
     "service_details": {"ar": "📦 {name}\n\n{details}\n\n💵 السعر: {price}", "en": "📦 {name}\n\n{details}\n\n💵 Price: {price}"},
     "buy": {"ar": "🛍️ شراء", "en": "🛍️ Buy"},
     "out_of_stock": {"ar": "⚠️ نفدت الكمية المتاحة من هذه الخدمة حاليًا.", "en": "⚠️ This service is out of stock right now."},
