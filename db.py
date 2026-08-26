@@ -1,0 +1,399 @@
+"""
+Data layer. Deliberately isolated from any Telegram/bot code so the customer
+bot and admin bot both read/write the exact same store, and so the bots can
+be restarted, redeployed, or crash without losing any customer data or
+balances. SQLite is used for simplicity; swapping to Postgres later only
+means changing this file (the ? placeholders would need to become %s, and
+the connection setup would change) - nothing in customer_bot.py or
+admin_bot.py touches SQL directly.
+"""
+import sqlite3
+import time
+import secrets
+import contextlib
+from config import DB_PATH
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER UNIQUE NOT NULL,
+    username TEXT,
+    phone TEXT,
+    join_date INTEGER NOT NULL,
+    lang TEXT NOT NULL DEFAULT 'ar',
+    currency TEXT NOT NULL DEFAULT 'egp',
+    balance REAL NOT NULL DEFAULT 0,
+    banned INTEGER NOT NULL DEFAULT 0,
+    referred_by INTEGER,
+    referral_code TEXT UNIQUE,
+    referral_bonus_paid INTEGER NOT NULL DEFAULT 0,
+    total_orders INTEGER NOT NULL DEFAULT 0,
+    completed_orders INTEGER NOT NULL DEFAULT 0,
+    total_spent REAL NOT NULL DEFAULT 0,
+    referral_earnings REAL NOT NULL DEFAULT 0,
+    referral_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name_ar TEXT NOT NULL,
+    name_en TEXT NOT NULL,
+    emoji TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    hidden INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id INTEGER NOT NULL REFERENCES categories(id),
+    name_ar TEXT NOT NULL,
+    name_en TEXT NOT NULL,
+    details_ar TEXT NOT NULL DEFAULT '',
+    details_en TEXT NOT NULL DEFAULT '',
+    price_egp REAL NOT NULL,
+    stock INTEGER NOT NULL DEFAULT -1,
+    requires_email INTEGER NOT NULL DEFAULT 0,
+    hidden INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    service_id INTEGER NOT NULL REFERENCES services(id),
+    service_name_ar TEXT NOT NULL,
+    price_egp REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    email TEXT,
+    created_at INTEGER NOT NULL,
+    delivered_at INTEGER,
+    note TEXT
+);
+
+CREATE TABLE IF NOT EXISTS topups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    method TEXT NOT NULL,
+    amount REAL NOT NULL,
+    reference TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER
+);
+"""
+
+
+@contextlib.contextmanager
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def init_db():
+    with get_conn() as conn:
+        conn.executescript(SCHEMA)
+        # Seed starter categories/services only on first run
+        row = conn.execute("SELECT COUNT(*) c FROM categories").fetchone()
+        if row["c"] == 0:
+            _seed(conn)
+
+
+def _seed(conn):
+    cats = [
+        ("خدمات السوشيال ميديا", "Social Media Services", "🚀", 1),
+        ("اشتراكات البرامج", "Software Subscriptions", "⭐", 2),
+        ("صفحات فيسبوك", "Facebook Pages", "👑", 3),
+    ]
+    cat_ids = []
+    for name_ar, name_en, emoji, order in cats:
+        cur = conn.execute(
+            "INSERT INTO categories (name_ar, name_en, emoji, sort_order) VALUES (?,?,?,?)",
+            (name_ar, name_en, emoji, order),
+        )
+        cat_ids.append(cur.lastrowid)
+
+    services = [
+        (cat_ids[0], "إعلانات ممولة", "Paid Ads Management",
+         "إدارة وتشغيل حملات إعلانية ممولة", "Running and managing paid ad campaigns",
+         500.0, -1, 0),
+        (cat_ids[0], "إدارة صفحات", "Page Management",
+         "إدارة كاملة لصفحتك على السوشيال ميديا", "Full management of your social page",
+         300.0, -1, 0),
+        (cat_ids[1], "اشتراك كانفا برو", "Canva Pro Subscription",
+         "تفعيل كانفا برو على إيميلك", "Activate Canva Pro on your email",
+         150.0, 20, 1),
+        (cat_ids[1], "اشتراك كاب كات برو", "CapCut Pro Subscription",
+         "تفعيل كاب كات برو على إيميلك", "Activate CapCut Pro on your email",
+         120.0, 20, 1),
+        (cat_ids[2], "صفحة فيسبوك 10k متابع", "Facebook Page 10k followers",
+         "صفحة فيسبوك حقيقية 10 آلاف متابع", "Real Facebook page with 10k followers",
+         900.0, 5, 0),
+    ]
+    for cat_id, nar, nen, dar, den, price, stock, req_email in services:
+        conn.execute(
+            """INSERT INTO services
+               (category_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (cat_id, nar, nen, dar, den, price, stock, req_email),
+        )
+
+
+# ---------------- Users ----------------
+
+def get_or_create_user(telegram_id: int, username: str | None, referred_by_code: str | None = None):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE telegram_id=?", (telegram_id,)).fetchone()
+        if row:
+            return dict(row)
+        referred_by = None
+        if referred_by_code:
+            ref = conn.execute("SELECT id FROM users WHERE referral_code=?", (referred_by_code,)).fetchone()
+            if ref and ref["id"]:
+                referred_by = ref["id"]
+        code = secrets.token_hex(4)
+        conn.execute(
+            """INSERT INTO users (telegram_id, username, join_date, referral_code, referred_by)
+               VALUES (?,?,?,?,?)""",
+            (telegram_id, username, int(time.time()), code, referred_by),
+        )
+        if referred_by:
+            conn.execute("UPDATE users SET referral_count = referral_count + 1 WHERE id=?", (referred_by,))
+        row = conn.execute("SELECT * FROM users WHERE telegram_id=?", (telegram_id,)).fetchone()
+        return dict(row)
+
+
+def get_user(telegram_id: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE telegram_id=?", (telegram_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_id(user_id: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def set_lang(telegram_id: int, lang: str):
+    with get_conn() as conn:
+        conn.execute("UPDATE users SET lang=? WHERE telegram_id=?", (lang, telegram_id))
+
+
+def set_currency(telegram_id: int, currency: str):
+    with get_conn() as conn:
+        conn.execute("UPDATE users SET currency=? WHERE telegram_id=?", (currency, telegram_id))
+
+
+def adjust_balance(user_id: int, delta: float):
+    with get_conn() as conn:
+        conn.execute("UPDATE users SET balance = balance + ? WHERE id=?", (delta, user_id))
+
+
+def set_ban(telegram_id: int, banned: bool):
+    with get_conn() as conn:
+        conn.execute("UPDATE users SET banned=? WHERE telegram_id=?", (1 if banned else 0, telegram_id))
+
+
+def list_users(limit=50, offset=0):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM users ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def all_active_telegram_ids():
+    with get_conn() as conn:
+        rows = conn.execute("SELECT telegram_id FROM users WHERE banned=0").fetchall()
+        return [r["telegram_id"] for r in rows]
+
+
+# ---------------- Categories & Services ----------------
+
+def list_categories(include_hidden=False):
+    with get_conn() as conn:
+        q = "SELECT * FROM categories"
+        if not include_hidden:
+            q += " WHERE hidden=0"
+        q += " ORDER BY sort_order, id"
+        return [dict(r) for r in conn.execute(q).fetchall()]
+
+
+def get_category(cat_id: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM categories WHERE id=?", (cat_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def add_category(name_ar, name_en, emoji=""):
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO categories (name_ar, name_en, emoji, sort_order) VALUES (?,?,?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories))",
+            (name_ar, name_en, emoji),
+        )
+        return cur.lastrowid
+
+
+def delete_category(cat_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM services WHERE category_id=?", (cat_id,))
+        conn.execute("DELETE FROM categories WHERE id=?", (cat_id,))
+
+
+def set_category_hidden(cat_id: int, hidden: bool):
+    with get_conn() as conn:
+        conn.execute("UPDATE categories SET hidden=? WHERE id=?", (1 if hidden else 0, cat_id))
+
+
+def list_services(category_id: int, include_hidden=False):
+    with get_conn() as conn:
+        q = "SELECT * FROM services WHERE category_id=?"
+        if not include_hidden:
+            q += " AND hidden=0"
+        q += " ORDER BY sort_order, id"
+        return [dict(r) for r in conn.execute(q, (category_id,)).fetchall()]
+
+
+def get_service(service_id: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM services WHERE id=?", (service_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def add_service(category_id, name_ar, name_en, details_ar, details_en, price_egp, stock=-1, requires_email=0):
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO services
+               (category_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (category_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email),
+        )
+        return cur.lastrowid
+
+
+def delete_service(service_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM services WHERE id=?", (service_id,))
+
+
+def update_service_field(service_id: int, field: str, value):
+    allowed = {"name_ar", "name_en", "details_ar", "details_en", "price_egp", "stock", "requires_email", "hidden"}
+    if field not in allowed:
+        raise ValueError("field not allowed")
+    with get_conn() as conn:
+        conn.execute(f"UPDATE services SET {field}=? WHERE id=?", (value, service_id))
+
+
+def adjust_stock(service_id: int, delta: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT stock FROM services WHERE id=?", (service_id,)).fetchone()
+        if row is None or row["stock"] < 0:
+            return  # unlimited stock, nothing to track
+        conn.execute("UPDATE services SET stock = MAX(stock + ?, 0) WHERE id=?", (delta, service_id))
+
+
+# ---------------- Orders ----------------
+
+def create_order(user_id, service_id, service_name_ar, price_egp, email=None):
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO orders (user_id, service_id, service_name_ar, price_egp, email, created_at, status)
+               VALUES (?,?,?,?,?,?, 'in_progress')""",
+            (user_id, service_id, service_name_ar, price_egp, email, int(time.time())),
+        )
+        conn.execute("UPDATE users SET total_orders = total_orders + 1, total_spent = total_spent + ? WHERE id=?",
+                     (price_egp, user_id))
+        return cur.lastrowid
+
+
+def list_orders_for_user(user_id, limit=20):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM orders WHERE user_id=? ORDER BY id DESC LIMIT ?", (user_id, limit)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_order(order_id):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def set_order_status(order_id, status):
+    with get_conn() as conn:
+        delivered_at = int(time.time()) if status == "delivered" else None
+        if delivered_at:
+            conn.execute("UPDATE orders SET status=?, delivered_at=? WHERE id=?", (status, delivered_at, order_id))
+        else:
+            conn.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
+        if status == "delivered":
+            order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+            conn.execute("UPDATE users SET completed_orders = completed_orders + 1 WHERE id=?", (order["user_id"],))
+
+
+def refund_order(order_id):
+    """Cancel an order and return the amount to the customer's balance."""
+    with get_conn() as conn:
+        order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        if not order or order["status"] == "refunded":
+            return None
+        conn.execute("UPDATE orders SET status='refunded' WHERE id=?", (order_id,))
+        conn.execute("UPDATE users SET balance = balance + ?, total_spent = total_spent - ? WHERE id=?",
+                     (order["price_egp"], order["price_egp"], order["user_id"]))
+        return dict(order)
+
+
+# ---------------- Top-ups ----------------
+
+def create_topup(user_id, method, amount, reference):
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO topups (user_id, method, amount, reference, created_at)
+               VALUES (?,?,?,?,?)""",
+            (user_id, method, amount, reference, int(time.time())),
+        )
+        return cur.lastrowid
+
+
+def get_topup(topup_id):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM topups WHERE id=?", (topup_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def resolve_topup(topup_id, approve: bool):
+    with get_conn() as conn:
+        t = conn.execute("SELECT * FROM topups WHERE id=?", (topup_id,)).fetchone()
+        if not t or t["status"] != "pending":
+            return None
+        status = "approved" if approve else "rejected"
+        conn.execute("UPDATE topups SET status=?, resolved_at=? WHERE id=?", (status, int(time.time()), topup_id))
+        if approve:
+            conn.execute("UPDATE users SET balance = balance + ? WHERE id=?", (t["amount"], t["user_id"]))
+        return dict(t)
+
+
+# ---------------- Referrals ----------------
+
+def maybe_pay_referral_bonus(referred_user_id: int, bonus_egp: float):
+    """Call after a referred user's FIRST order is created. Pays their
+    referrer once, and only once, per referred user."""
+    with get_conn() as conn:
+        user = conn.execute("SELECT * FROM users WHERE id=?", (referred_user_id,)).fetchone()
+        if not user or not user["referred_by"] or user["referral_bonus_paid"]:
+            return False
+        if user["total_orders"] != 1:
+            return False  # only pay on the referred user's first-ever order
+        conn.execute(
+            "UPDATE users SET balance = balance + ?, referral_earnings = referral_earnings + ? WHERE id=?",
+            (bonus_egp, bonus_egp, user["referred_by"]),
+        )
+        conn.execute("UPDATE users SET referral_bonus_paid=1 WHERE id=?", (referred_user_id,))
+        return True
