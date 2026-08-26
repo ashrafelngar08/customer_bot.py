@@ -97,11 +97,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("svc:add:"):
         cat_id = int(data.split(":")[2])
         context.user_data["awaiting"] = ("add_service_name", cat_id)
-        await query.edit_message_text("أرسل اسم الخدمة بالعربي:")
+        await query.edit_message_text("أرسل اسم المنتج بالعربي:")
 
     elif data.startswith("svc:view:"):
         svc_id = int(data.split(":")[2])
-        await show_service_admin(query, svc_id)
+        await show_product_admin(query, svc_id)
 
     elif data.startswith("svc:delete:"):
         svc_id = int(data.split(":")[2])
@@ -114,17 +114,39 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         svc_id = int(data.split(":")[2])
         s = db.get_service(svc_id)
         db.update_service_field(svc_id, "hidden", 0 if s["hidden"] else 1)
-        await show_service_admin(query, svc_id)
+        await show_product_admin(query, svc_id)
 
-    elif data.startswith("svc:editprice:"):
+    elif data.startswith("var:add:"):
         svc_id = int(data.split(":")[2])
-        context.user_data["awaiting"] = ("edit_price", svc_id)
+        context.user_data["awaiting"] = ("add_variant_name", svc_id)
+        await query.edit_message_text("أرسل اسم النسخة/المدة بالعربي (مثال: 18 شهر):")
+
+    elif data.startswith("var:view:"):
+        variant_id = int(data.split(":")[2])
+        await show_variant_admin(query, variant_id)
+
+    elif data.startswith("var:delete:"):
+        variant_id = int(data.split(":")[2])
+        v = db.get_variant(variant_id)
+        svc_id = v["service_id"]
+        db.delete_variant(variant_id)
+        await show_product_admin(query, svc_id)
+
+    elif data.startswith("var:hide:"):
+        variant_id = int(data.split(":")[2])
+        v = db.get_variant(variant_id)
+        db.update_variant_field(variant_id, "hidden", 0 if v["hidden"] else 1)
+        await show_variant_admin(query, variant_id)
+
+    elif data.startswith("var:editprice:"):
+        variant_id = int(data.split(":")[2])
+        context.user_data["awaiting"] = ("edit_variant_price", variant_id)
         await query.edit_message_text("أرسل السعر الجديد بالجنيه المصري:")
 
-    elif data.startswith("svc:stock:"):
-        _, _, svc_id, delta = data.split(":")
-        db.adjust_stock(int(svc_id), int(delta))
-        await show_service_admin(query, int(svc_id))
+    elif data.startswith("var:stock:"):
+        _, _, variant_id, delta = data.split(":")
+        db.adjust_variant_stock(int(variant_id), int(delta))
+        await show_variant_admin(query, int(variant_id))
 
     elif data.startswith("users:list:"):
         offset = int(data.split(":")[2])
@@ -198,36 +220,58 @@ async def show_services_admin(query, cat_id):
     services = db.list_services(cat_id, include_hidden=True)
     rows = []
     for s in services:
-        label = f"{s['name_ar']} — {s['price_egp']:.0f} EGP"
+        label = s["name_ar"]
         if s["hidden"]:
             label += " (مخفي)"
         rows.append([InlineKeyboardButton(label, callback_data=f"svc:view:{s['id']}")])
-    rows.append([InlineKeyboardButton("➕ إضافة خدمة", callback_data=f"svc:add:{cat_id}")])
+    rows.append([InlineKeyboardButton("➕ إضافة منتج", callback_data=f"svc:add:{cat_id}")])
     rows.append([
         InlineKeyboardButton("🗑️ حذف الصنف", callback_data=f"cats:delete:{cat_id}"),
         InlineKeyboardButton("👁️ إخفاء/إظهار الصنف", callback_data=f"cats:hide:{cat_id}"),
     ])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="cats:root")])
-    await query.edit_message_text(f"خدمات صنف: {cat['name_ar']}", reply_markup=InlineKeyboardMarkup(rows))
+    await query.edit_message_text(f"منتجات صنف: {cat['name_ar']}", reply_markup=InlineKeyboardMarkup(rows))
 
 
-async def show_service_admin(query, svc_id):
-    s = db.get_service(svc_id)
-    stock_label = "غير محدود" if s["stock"] < 0 else str(s["stock"])
+async def show_product_admin(query, service_id):
+    """Product-level admin screen: lists this product's variants (durations/
+    options) - price, stock, and buying all live on the variant now."""
+    s = db.get_service(service_id)
+    variants = db.list_variants(service_id, include_hidden=True)
+    rows = []
+    for v in variants:
+        label = f"{v['name_ar']} — {v['price_egp']:.0f} EGP"
+        if v["hidden"]:
+            label += " (مخفي)"
+        rows.append([InlineKeyboardButton(label, callback_data=f"var:view:{v['id']}")])
+    rows.append([InlineKeyboardButton("➕ إضافة نسخة/مدة", callback_data=f"var:add:{service_id}")])
+    rows.append([
+        InlineKeyboardButton("🗑️ حذف المنتج", callback_data=f"svc:delete:{service_id}"),
+        InlineKeyboardButton("👁️ إخفاء/إظهار المنتج", callback_data=f"svc:hide:{service_id}"),
+    ])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"cats:view:{s['category_id']}")])
+    header = f"📦 {s['name_ar']}" + (" (مخفي)" if s["hidden"] else "")
+    await query.edit_message_text(header + "\n\nنسخ/مدد هذا المنتج:", reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def show_variant_admin(query, variant_id):
+    v = db.get_variant(variant_id)
+    s = db.get_service(v["service_id"])
+    stock_label = "غير محدود" if v["stock"] < 0 else str(v["stock"])
     text = (
-        f"📦 {s['name_ar']}\n{s['details_ar']}\n\n"
-        f"💵 السعر: {s['price_egp']:.2f} EGP\n"
+        f"📦 {s['name_ar']} — {v['name_ar']}\n{v['details_ar']}\n\n"
+        f"💵 السعر: {v['price_egp']:.2f} EGP\n"
         f"📊 الكمية: {stock_label}\n"
-        f"📧 يتطلب إيميل: {'نعم' if s['requires_email'] else 'لا'}\n"
-        f"👁️ الحالة: {'مخفي' if s['hidden'] else 'ظاهر'}"
+        f"📧 يتطلب إيميل: {'نعم' if v['requires_email'] else 'لا'}\n"
+        f"👁️ الحالة: {'مخفي' if v['hidden'] else 'ظاهر'}"
     )
     rows = [
-        [InlineKeyboardButton("✏️ تعديل السعر", callback_data=f"svc:editprice:{svc_id}")],
-        [InlineKeyboardButton("➕ زيادة مخزون", callback_data=f"svc:stock:{svc_id}:5"),
-         InlineKeyboardButton("➖ إنقاص مخزون", callback_data=f"svc:stock:{svc_id}:-5")],
-        [InlineKeyboardButton("👁️ إخفاء/إظهار", callback_data=f"svc:hide:{svc_id}"),
-         InlineKeyboardButton("🗑️ حذف", callback_data=f"svc:delete:{svc_id}")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data=f"cats:view:{s['category_id']}")],
+        [InlineKeyboardButton("✏️ تعديل السعر", callback_data=f"var:editprice:{variant_id}")],
+        [InlineKeyboardButton("➕ زيادة مخزون", callback_data=f"var:stock:{variant_id}:5"),
+         InlineKeyboardButton("➖ إنقاص مخزون", callback_data=f"var:stock:{variant_id}:-5")],
+        [InlineKeyboardButton("👁️ إخفاء/إظهار", callback_data=f"var:hide:{variant_id}"),
+         InlineKeyboardButton("🗑️ حذف", callback_data=f"var:delete:{variant_id}")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data=f"svc:view:{v['service_id']}")],
     ]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
 
@@ -385,56 +429,66 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif kind == "add_service_name":
         cat_id = awaiting[1]
+        context.user_data.pop("awaiting", None)
         name_ar = text
-        context.user_data["awaiting"] = ("add_service_details", cat_id, name_ar)
-        await update.message.reply_text("أرسل تفاصيل الخدمة بالعربي:")
+        name_en = translate_to_english(name_ar)
+        db.add_service(cat_id, name_ar, name_en)
+        await update.message.reply_text(
+            f"✅ تم إضافة المنتج: {name_ar}\nدلوقتي ضيفله نسخة/مدة واحدة على الأقل من زر ➕ إضافة نسخة/مدة عشان يبقى قابل للشراء."
+        )
 
-    elif kind == "add_service_details":
-        cat_id, name_ar = awaiting[1], awaiting[2]
+    elif kind == "add_variant_name":
+        svc_id = awaiting[1]
+        name_ar = text
+        context.user_data["awaiting"] = ("add_variant_details", svc_id, name_ar)
+        await update.message.reply_text("أرسل تفاصيل هذه النسخة بالعربي:")
+
+    elif kind == "add_variant_details":
+        svc_id, name_ar = awaiting[1], awaiting[2]
         details_ar = text
-        context.user_data["awaiting"] = ("add_service_price", cat_id, name_ar, details_ar)
+        context.user_data["awaiting"] = ("add_variant_price", svc_id, name_ar, details_ar)
         await update.message.reply_text("أرسل السعر بالجنيه:")
 
-    elif kind == "add_service_price":
-        cat_id, name_ar, details_ar = awaiting[1], awaiting[2], awaiting[3]
+    elif kind == "add_variant_price":
+        svc_id, name_ar, details_ar = awaiting[1], awaiting[2], awaiting[3]
         try:
             price = float(text)
         except ValueError:
             await update.message.reply_text("⚠️ من فضلك أرسل رقم صحيح للسعر.")
             return
-        context.user_data["awaiting"] = ("add_service_stock", cat_id, name_ar, details_ar, price)
+        context.user_data["awaiting"] = ("add_variant_stock", svc_id, name_ar, details_ar, price)
         await update.message.reply_text("أرسل الكمية (اكتب -1 لغير محدود):")
 
-    elif kind == "add_service_stock":
-        cat_id, name_ar, details_ar, price = awaiting[1], awaiting[2], awaiting[3], awaiting[4]
+    elif kind == "add_variant_stock":
+        svc_id, name_ar, details_ar, price = awaiting[1], awaiting[2], awaiting[3], awaiting[4]
         try:
             stock = int(text)
         except ValueError:
             await update.message.reply_text("⚠️ من فضلك أرسل رقم صحيح للكمية.")
             return
-        context.user_data["awaiting"] = ("add_service_email", cat_id, name_ar, details_ar, price, stock)
+        context.user_data["awaiting"] = ("add_variant_email", svc_id, name_ar, details_ar, price, stock)
         await update.message.reply_text("يتطلب إيميل؟ (نعم/لا)")
 
-    elif kind == "add_service_email":
-        cat_id, name_ar, details_ar, price, stock = (
+    elif kind == "add_variant_email":
+        svc_id, name_ar, details_ar, price, stock = (
             awaiting[1], awaiting[2], awaiting[3], awaiting[4], awaiting[5]
         )
         context.user_data.pop("awaiting", None)
         requires_email = 1 if text.strip() in ("نعم", "yes", "Yes", "y", "Y") else 0
         name_en = translate_to_english(name_ar)
         details_en = translate_to_english(details_ar)
-        db.add_service(cat_id, name_ar, name_en, details_ar, details_en, price, stock, requires_email)
-        await update.message.reply_text(f"✅ تم إضافة الخدمة: {name_ar}")
+        db.add_variant(svc_id, name_ar, name_en, details_ar, details_en, price, stock, requires_email)
+        await update.message.reply_text(f"✅ تم إضافة النسخة: {name_ar}")
 
-    elif kind == "edit_price":
-        svc_id = awaiting[1]
+    elif kind == "edit_variant_price":
+        variant_id = awaiting[1]
         context.user_data.pop("awaiting", None)
         try:
             price = float(text)
         except ValueError:
             await update.message.reply_text("⚠️ من فضلك أرسل رقم صحيح.")
             return
-        db.update_service_field(svc_id, "price_egp", price)
+        db.update_variant_field(variant_id, "price_egp", price)
         await update.message.reply_text(f"✅ تم تحديث السعر إلى {price:.2f} EGP")
 
     elif kind == "add_balance":
