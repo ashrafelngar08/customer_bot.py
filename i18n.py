@@ -1,476 +1,123 @@
-import logging
-import re
-from datetime import datetime
+"""All customer-facing strings, Arabic + English, keyed by short id."""
 
-from telegram import (
-    Update, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton,
-)
-from telegram.ext import (
-    ApplicationBuilder, ContextTypes, CommandHandler,
-    CallbackQueryHandler, MessageHandler, filters,
-)
-from telegram.constants import ParseMode
-from telegram.error import TelegramError
+STRINGS = {
+    "welcome": {
+        "ar": "أهلًا بيك 👋\nاختر من القائمة تحت:",
+        "en": "Welcome 👋\nChoose from the menu below:",
+    },
+    "menu_services": {"ar": "🛒 الخدمات", "en": "🛒 Services"},
+    "menu_orders": {"ar": "📋 طلباتي السابقة", "en": "📋 My Orders"},
+    "menu_currency": {"ar": "💱 تحويل العملات", "en": "💱 Currency"},
+    "menu_topup": {"ar": "💳 إضافة رصيد", "en": "💳 Add Balance"},
+    "menu_balance": {"ar": "💰 رصيدي", "en": "💰 My Balance"},
+    "menu_lang": {"ar": "🌐 اللغة / Language", "en": "🌐 Language / اللغة"},
+    "menu_profile": {"ar": "⚙️ حسابي الشخصي", "en": "⚙️ My Account"},
+    "menu_referral": {"ar": "💸 الربح عبر الدعوة", "en": "💸 Earn via Referral"},
+    "menu_support": {"ar": "📞 الدعم الفني", "en": "📞 Support"},
+    "back": {"ar": "🔙 رجوع", "en": "🔙 Back"},
+    "main_menu": {"ar": "🏠 القائمة الرئيسية", "en": "🏠 Main Menu"},
 
-import config
-import db
-from i18n import t
-from pricing import format_price
+    "choose_category": {"ar": "اختر الصنف:", "en": "Choose a category:"},
+    "no_categories": {"ar": "لا توجد أصناف متاحة حاليًا.", "en": "No categories available right now."},
+    "choose_service": {"ar": "اختر الخدمة:", "en": "Choose a service:"},
+    "no_services": {"ar": "لا توجد خدمات في هذا الصنف حاليًا.", "en": "No services in this category yet."},
+    "choose_variant": {"ar": "اختر المدة/النسخة:", "en": "Choose an option:"},
+    "no_variants": {"ar": "لا توجد نسخ متاحة لهذه الخدمة حاليًا.", "en": "No options available for this service yet."},
+    "service_details": {"ar": "📦 {name}\n\n{details}\n\n💵 السعر: {price}", "en": "📦 {name}\n\n{details}\n\n💵 Price: {price}"},
+    "buy": {"ar": "🛍️ شراء", "en": "🛍️ Buy"},
+    "out_of_stock": {"ar": "⚠️ نفدت الكمية المتاحة من هذه الخدمة حاليًا.", "en": "⚠️ This service is out of stock right now."},
+    "insufficient_balance": {
+        "ar": "❌ رصيدك غير كافٍ لإتمام هذا الطلب.\nرصيدك الحالي: {balance}\nسعر الخدمة: {price}\n\nجاري تحويلك لقائمة إضافة رصيد 👇",
+        "en": "❌ Your balance isn't enough for this order.\nYour balance: {balance}\nService price: {price}\n\nRedirecting you to Add Balance 👇",
+    },
+    "ask_email": {"ar": "📧 من فضلك أرسل الإيميل المطلوب تفعيل الخدمة عليه:", "en": "📧 Please send the email to activate this service on:"},
+    "invalid_email": {"ar": "⚠️ الإيميل غير صحيح، حاول تاني.", "en": "⚠️ That doesn't look like a valid email, try again."},
+    "order_placed": {
+        "ar": "✅ تم استلام طلبك بنجاح!\nالخدمة: {name}\nالسعر: {price}\nرقم الطلب: #{order_id}\n\nسيتم تنفيذه في أقرب وقت.",
+        "en": "✅ Your order was placed successfully!\nService: {name}\nPrice: {price}\nOrder #{order_id}\n\nIt will be processed shortly.",
+    },
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-log = logging.getLogger("customer_bot")
+    "orders_title": {"ar": "📋 طلباتك السابقة:", "en": "📋 Your previous orders:"},
+    "no_orders": {"ar": "لا يوجد لديك أي طلبات بعد.", "en": "You have no orders yet."},
+    "order_line": {
+        "ar": "🔹 #{id} — {name}\n   📅 {date} | 💵 {price} | 📌 {status}",
+        "en": "🔹 #{id} — {name}\n   📅 {date} | 💵 {price} | 📌 {status}",
+    },
+    "status_pending": {"ar": "قيد الانتظار", "en": "Pending"},
+    "status_in_progress": {"ar": "قيد التنفيذ", "en": "In Progress"},
+    "status_delivered": {"ar": "تم التسليم ✅", "en": "Delivered ✅"},
+    "status_refunded": {"ar": "ملغي ومسترجع 🔁", "en": "Cancelled & Refunded 🔁"},
 
-STATUS_KEY = {
-    "pending": "status_pending",
-    "in_progress": "status_in_progress",
-    "delivered": "status_delivered",
-    "refunded": "status_refunded",
+    "currency_title": {"ar": "💱 اختر العملة اللي هتتعرض بيها الأسعار:", "en": "💱 Choose the currency prices are shown in:"},
+    "egp": {"ar": "🇪🇬 جنيه مصري", "en": "🇪🇬 EGP"},
+    "usd": {"ar": "💵 دولار", "en": "💵 USD"},
+    "currency_saved": {"ar": "تم الحفظ ✅ الأسعار هتتعرض دلوقتي بالـ {cur}", "en": "Saved ✅ Prices will now show in {cur}"},
+
+    "topup_title": {"ar": "💳 اختر طريقة إضافة الرصيد:", "en": "💳 Choose a top-up method:"},
+    "vf_instructions": {
+        "ar": "حوّل المبلغ إلى المحفظة التالية:\n📱 `{number}`\n\nبعد التحويل، اكتب رسالة بالشكل التالي:\nرقم الهاتف اللي حولت منه، مسافة، ثم المبلغ\nمثال: `01012345678 100`",
+        "en": "Send the amount to this wallet:\n📱 `{number}`\n\nAfter sending, reply with:\nthe phone number you sent from, a space, then the amount\nExample: `01012345678 100`",
+    },
+    "bp_instructions": {
+        "ar": "حوّل المبلغ إلى Binance ID التالي:\n🆔 `{bid}`\n\nبعد التحويل، اكتب رسالة بالشكل التالي:\nرقم الطلب (Order ID)، مسافة، ثم المبلغ\nمثال: `123456789 100`",
+        "en": "Send the amount to this Binance ID:\n🆔 `{bid}`\n\nAfter sending, reply with:\nyour Order ID, a space, then the amount\nExample: `123456789 100`",
+    },
+    "topup_bad_format": {"ar": "⚠️ الصيغة غلط. اكتب: القيمة الأولى مسافة ثم المبلغ (أرقام فقط).", "en": "⚠️ Wrong format. Send: first value, a space, then the amount (numbers only)."},
+    "topup_submitted": {
+        "ar": "✅ تم إرسال طلبك للإدارة، هيتم تأكيده يدويًا خلال وقت قصير وسيُضاف الرصيد تلقائيًا بعد التأكيد.",
+        "en": "✅ Your request was sent to the admin team, it'll be confirmed shortly and your balance will be added automatically once approved.",
+    },
+    "topup_approved": {"ar": "✅ تم تأكيد شحن رصيدك بمبلغ {amount}. رصيدك الحالي: {balance}", "en": "✅ Your top-up of {amount} was approved. Your balance: {balance}"},
+    "topup_rejected": {"ar": "❌ للأسف تم رفض طلب شحن الرصيد. تواصل مع الدعم الفني لو فيه استفسار.", "en": "❌ Unfortunately your top-up request was rejected. Contact support if you have questions."},
+
+    "balance_title": {"ar": "💰 رصيدك الحالي: {balance}", "en": "💰 Your current balance: {balance}"},
+
+    "lang_title": {"ar": "🌐 اختر اللغة:", "en": "🌐 Choose your language:"},
+    "lang_saved": {"ar": "✅ تم تغيير اللغة للعربي", "en": "✅ Language switched to English"},
+
+    "profile_title": {
+        "ar": (
+            "⚙️ حسابك الشخصي\n\n"
+            "🆔 المعرف: {id}\n"
+            "📱 الهاتف: {phone}\n"
+            "📅 تاريخ الانضمام: {joined}\n"
+            "💱 العملة: {currency}\n"
+            "🛍️ إجمالي الطلبات: {total_orders}\n"
+            "✅ الطلبات المكتملة: {completed}\n"
+            "💵 إجمالي الإنفاق: {spent}\n"
+            "💰 الرصيد الحالي: {balance}\n"
+            "💸 إجمالي مكافآت الإحالة: {ref_earnings}"
+        ),
+        "en": (
+            "⚙️ Your account\n\n"
+            "🆔 ID: {id}\n"
+            "📱 Phone: {phone}\n"
+            "📅 Joined: {joined}\n"
+            "💱 Currency: {currency}\n"
+            "🛍️ Total orders: {total_orders}\n"
+            "✅ Completed orders: {completed}\n"
+            "💵 Total spent: {spent}\n"
+            "💰 Current balance: {balance}\n"
+            "💸 Total referral rewards: {ref_earnings}"
+        ),
+    },
+    "not_set": {"ar": "غير مسجل", "en": "not set"},
+
+    "referral_title": {
+        "ar": "💸 اربح {bonus} عن كل صديق تدعوه!\nهيتم إضافة المكافأة لرصيدك فور ما صاحبك يعمل أول طلب ليه.\n\n👥 عدد إحالاتك: {count}\n🔗 رابط الإحالة الخاص بيك:\n{link}",
+        "en": "💸 Earn {bonus} for every friend you invite!\nThe reward is added to your balance as soon as your friend places their first order.\n\n👥 Your referrals: {count}\n🔗 Your referral link:\n{link}",
+    },
+
+    "support_title": {"ar": "📞 الدعم الفني\n\nتواصل معنا: {user}\nقناتنا: {channel}", "en": "📞 Support\n\nContact us: {user}\nOur channel: {channel}"},
+
+    "banned": {"ar": "🚫 تم حظر حسابك من استخدام البوت.", "en": "🚫 Your account has been banned from using this bot."},
+    "ask_phone": {"ar": "📱 من فضلك شارك رقم هاتفك للمتابعة:", "en": "📱 Please share your phone number to continue:"},
+    "share_phone_btn": {"ar": "📱 مشاركة رقم الهاتف", "en": "📱 Share phone number"},
+    "phone_saved": {"ar": "✅ تم حفظ رقم هاتفك.", "en": "✅ Your phone number was saved."},
 }
 
-# ---------------- Persistent bottom menu (Reply Keyboard) ----------------
-# This is the always-visible menu under the message box, like a normal
-# storefront bot - not attached to any single message, unlike inline
-# keyboards. Each button just sends its label as plain text, which on_text
-# below recognizes and routes to the right screen.
 
-MENU_LABELS = {
-    "services": {"ar": "🛒 الخدمات", "en": "🛒 Services"},
-    "profile": {"ar": "⚙️ حسابي", "en": "⚙️ My Account"},
-    "orders": {"ar": "📋 طلباتي", "en": "📋 My Orders"},
-    "balance": {"ar": "💰 رصيدي", "en": "💰 My Balance"},
-    "topup": {"ar": "💳 إضافة رصيد", "en": "💳 Add Balance"},
-    "support": {"ar": "📞 الدعم", "en": "📞 Support"},
-    "currency": {"ar": "💱 تحويل العملات", "en": "💱 Currency"},
-    "lang": {"ar": "🌐 اللغة", "en": "🌐 Language"},
-    "referral": {"ar": "💸 الربح عبر الدعوة", "en": "💸 Earn via Referral"},
-}
-
-# text -> action, built for both languages so a switch mid-session still matches
-MENU_LOOKUP = {}
-for _action, _labels in MENU_LABELS.items():
-    for _lang_code, _label in _labels.items():
-        MENU_LOOKUP[_label] = _action
-
-
-def main_reply_keyboard(lang) -> ReplyKeyboardMarkup:
-    rows = [
-        [KeyboardButton(MENU_LABELS["services"][lang]), KeyboardButton(MENU_LABELS["profile"][lang])],
-        [KeyboardButton(MENU_LABELS["orders"][lang]), KeyboardButton(MENU_LABELS["balance"][lang])],
-        [KeyboardButton(MENU_LABELS["topup"][lang]), KeyboardButton(MENU_LABELS["support"][lang])],
-        [KeyboardButton(MENU_LABELS["currency"][lang]), KeyboardButton(MENU_LABELS["lang"][lang])],
-        [KeyboardButton(MENU_LABELS["referral"][lang])],
-    ]
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
-
-
-def back_kb(lang, back_to=None):
-    """Inline back button used only inside multi-step flows (categories ->
-    services -> service detail, currency choice, language choice, topup
-    method). The persistent bottom menu handles top-level navigation, so
-    this never needs a 'back to main' target."""
-    if back_to is None:
-        return None
-    return InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data=back_to)]])
-
-
-async def respond(target, text, reply_markup=None, **kwargs):
-    """target is either a CallbackQuery (edit in place) or an
-    Update.message-like object (send a fresh message)."""
-    if hasattr(target, "edit_message_text"):
-        await target.edit_message_text(text, reply_markup=reply_markup, **kwargs)
-    else:
-        await target.reply_text(text, reply_markup=reply_markup, **kwargs)
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tg_user = update.effective_user
-    ref_code = None
-    if context.args:
-        ref_code = context.args[0]
-    user = db.get_or_create_user(tg_user.id, tg_user.username, ref_code)
-    if user["banned"]:
-        await update.message.reply_text(t("banned", user["lang"]))
-        return
-    lang = user["lang"]
-    await update.message.reply_text(t("welcome", lang), reply_markup=main_reply_keyboard(lang))
-
-
-async def guard_banned(update, user) -> bool:
-    """Returns True (and notifies) if the user is banned."""
-    if user and user["banned"]:
-        lang = user["lang"]
-        if update.callback_query:
-            await update.callback_query.answer(t("banned", lang), show_alert=True)
-        else:
-            await update.message.reply_text(t("banned", lang))
-        return True
-    return False
-
-
-# ---------------- Inline callbacks: category/service browsing, currency,
-# language, top-up method choice. All of these live inside a specific bot
-# message, so they stay inline (that's what inline keyboards are for).
-
-async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    tg_user = update.effective_user
-    user = db.get_or_create_user(tg_user.id, tg_user.username)
-    if await guard_banned(update, user):
-        return
-    lang = user["lang"]
-    data = query.data
-    await query.answer()
-
-    if data == "cats:root":
-        await show_categories(query, lang)
-
-    elif data.startswith("cat:"):
-        cat_id = int(data.split(":")[1])
-        await show_services(query, lang, cat_id)
-
-    elif data.startswith("svc:"):
-        svc_id = int(data.split(":")[1])
-        await show_variants(query, lang, svc_id)
-
-    elif data.startswith("var:"):
-        variant_id = int(data.split(":")[1])
-        await show_variant_detail(query, lang, user, variant_id)
-
-    elif data.startswith("buy:"):
-        variant_id = int(data.split(":")[1])
-        await handle_buy(query, context, lang, user, variant_id)
-
-    elif data.startswith("setcur:"):
-        cur = data.split(":")[1]
-        db.set_currency(tg_user.id, cur)
-        cur_label = t("egp", lang) if cur == "egp" else t("usd", lang)
-        await query.edit_message_text(t("currency_saved", lang, cur=cur_label))
-
-    elif data.startswith("topup:"):
-        method = data.split(":")[1]
-        context.user_data["awaiting"] = ("topup", method)
-        if method == "vf":
-            text = t("vf_instructions", lang, number=config.VODAFONE_CASH_NUMBER)
-        else:
-            text = t("bp_instructions", lang, bid=config.BINANCE_PAY_ID)
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
-
-    elif data.startswith("setlang:"):
-        new_lang = data.split(":")[1]
-        db.set_lang(tg_user.id, new_lang)
-        await query.edit_message_text(t("lang_saved", new_lang))
-        # Bottom keyboard also needs to switch language - resend it
-        await context.bot.send_message(
-            tg_user.id, t("welcome", new_lang), reply_markup=main_reply_keyboard(new_lang)
-        )
-
-
-async def show_categories(target, lang):
-    cats = db.list_categories()
-    if not cats:
-        await respond(target, t("no_categories", lang))
-        return
-    buttons = []
-    for c in cats:
-        name = c["name_ar"] if lang == "ar" else c["name_en"]
-        buttons.append(InlineKeyboardButton(f"{c['emoji']} {name}".strip(), callback_data=f"cat:{c['id']}"))
-    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    await respond(target, t("choose_category", lang), reply_markup=InlineKeyboardMarkup(rows))
-
-
-async def show_services(query, lang, cat_id):
-    services = db.list_services(cat_id)
-    if not services:
-        await respond(query, t("no_services", lang), reply_markup=back_kb(lang, "cats:root"))
-        return
-    buttons = []
-    for s in services:
-        name = s["name_ar"] if lang == "ar" else s["name_en"]
-        label = name if s["stock"] != 0 else f"{name} ❌"
-        buttons.append(InlineKeyboardButton(label, callback_data=f"svc:{s['id']}"))
-    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    rows.append([InlineKeyboardButton(t("back", lang), callback_data="cats:root")])
-    await query.edit_message_text(t("choose_service", lang), reply_markup=InlineKeyboardMarkup(rows))
-
-
-async def show_variants(query, lang, svc_id):
-    """Shows the list of variants (durations/options) under a product -
-    e.g. product 'جيميناي برو' -> variants '18 شهر' / '12 شهر'."""
-    service = db.get_service(svc_id)
-    variants = db.list_variants(svc_id)
-    if not service or not variants:
-        await respond(query, t("no_variants", lang), reply_markup=back_kb(lang, f"cat:{service['category_id']}" if service else "cats:root"))
-        return
-    buttons = []
-    for v in variants:
-        name = v["name_ar"] if lang == "ar" else v["name_en"]
-        label = name if v["stock"] != 0 else f"{name} ❌"
-        buttons.append(InlineKeyboardButton(label, callback_data=f"var:{v['id']}"))
-    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    rows.append([InlineKeyboardButton(t("back", lang), callback_data=f"cat:{service['category_id']}")])
-    await query.edit_message_text(t("choose_variant", lang), reply_markup=InlineKeyboardMarkup(rows))
-
-
-async def show_variant_detail(query, lang, user, variant_id):
-    v = db.get_variant(variant_id)
-    if not v:
-        await respond(query, t("no_variants", lang), reply_markup=back_kb(lang, "cats:root"))
-        return
-    service = db.get_service(v["service_id"])
-    product_name = service["name_ar"] if lang == "ar" else service["name_en"]
-    variant_name = v["name_ar"] if lang == "ar" else v["name_en"]
-    name = f"{product_name} — {variant_name}"
-    details = v["details_ar"] if lang == "ar" else v["details_en"]
-    price = format_price(v["price_egp"], user["currency"])
-    text = t("service_details", lang, name=name, details=details, price=price)
-    rows = []
-    if v["stock"] != 0:
-        rows.append([InlineKeyboardButton(t("buy", lang), callback_data=f"buy:{v['id']}")])
-    else:
-        text += "\n\n" + t("out_of_stock", lang)
-    rows.append([InlineKeyboardButton(t("back", lang), callback_data=f"svc:{v['service_id']}")])
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
-
-
-async def handle_buy(query, context, lang, user, variant_id):
-    v = db.get_variant(variant_id)
-    if not v or v["hidden"]:
-        await respond(query, t("no_variants", lang), reply_markup=back_kb(lang, "cats:root"))
-        return
-    if v["stock"] == 0:
-        await query.answer(t("out_of_stock", lang), show_alert=True)
-        return
-    if user["balance"] < v["price_egp"]:
-        bal = format_price(user["balance"], user["currency"])
-        price = format_price(v["price_egp"], user["currency"])
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data=f"var:{variant_id}")]])
-        await query.edit_message_text(
-            t("insufficient_balance", lang, balance=bal, price=price) + "\n\n" + MENU_LABELS["topup"][lang],
-            reply_markup=kb,
-        )
-        return
-
-    if v["requires_email"]:
-        context.user_data["awaiting"] = ("email", variant_id)
-        await query.edit_message_text(t("ask_email", lang), reply_markup=back_kb(lang, f"var:{variant_id}"))
-        return
-
-    await finalize_order(query, context, lang, user, v, email=None)
-
-
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-async def finalize_order(target, context, lang, user, variant, email=None):
-    """target can be a CallbackQuery or an Update.message-like object.
-    variant is a row from the variants table (what's actually purchased)."""
-    service = db.get_service(variant["service_id"])
-    db.adjust_balance(user["id"], -variant["price_egp"])
-    db.adjust_variant_stock(variant["id"], -1)
-    full_name_ar = f"{service['name_ar']} — {variant['name_ar']}"
-    order_id = db.create_order(user["id"], service["id"], variant["id"], full_name_ar, variant["price_egp"], email)
-
-    # Pay referral bonus if this is the referred user's first order
-    if db.maybe_pay_referral_bonus(user["id"], config.REFERRAL_BONUS_EGP):
-        referrer = db.get_user_by_id(user["referred_by"]) if user["referred_by"] else None
-        if referrer:
-            bonus_msg = (
-                f"🎉 حصلت على {config.REFERRAL_BONUS_EGP:.0f} جنيه مكافأة إحالة!"
-                if referrer["lang"] == "ar" else
-                f"🎉 You earned {config.REFERRAL_BONUS_EGP:.0f} EGP referral bonus!"
-            )
-            try:
-                await context.bot.send_message(referrer["telegram_id"], bonus_msg)
-            except TelegramError:
-                pass
-
-    full_name = f"{service['name_ar'] if lang == 'ar' else service['name_en']} — {variant['name_ar'] if lang == 'ar' else variant['name_en']}"
-    fresh_user = db.get_user_by_id(user["id"])
-    price = format_price(variant["price_egp"], fresh_user["currency"])
-    text = t("order_placed", lang, name=full_name, price=price, order_id=order_id)
-    await respond(target, text)
-
-    # Notify admin bot so it can be delivered / actioned
-    await notify_admin_new_order(context, fresh_user, service, variant, order_id, email)
-
-
-async def notify_admin_new_order(context, user, service, variant, order_id, email):
-    from telegram import Bot
-    admin_bot = Bot(token=config.ADMIN_BOT_TOKEN)
-    lines = [
-        f"🆕 طلب جديد #{order_id}",
-        f"👤 العميل: {user['telegram_id']} (@{user['username']})",
-        f"📦 الخدمة: {service['name_ar']} — {variant['name_ar']}",
-        f"💵 السعر: {variant['price_egp']:.2f} EGP",
-    ]
-    if email:
-        lines.append(f"📧 الإيميل: {email}")
-    text = "\n".join(lines)
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ تم التسليم", callback_data=f"admin_deliver:{order_id}"),
-         InlineKeyboardButton("♻️ إلغاء واسترجاع", callback_data=f"admin_refund:{order_id}")],
-    ])
-    try:
-        await admin_bot.send_message(config.ADMIN_ID, text, reply_markup=kb)
-    except TelegramError as e:
-        log.error("Failed to notify admin bot of new order: %s", e)
-
-
-async def show_orders(target, lang, user):
-    orders = db.list_orders_for_user(user["id"])
-    if not orders:
-        await respond(target, t("no_orders", lang))
-        return
-    lines = [t("orders_title", lang), ""]
-    for o in orders:
-        date = datetime.fromtimestamp(o["created_at"]).strftime("%Y-%m-%d")
-        price = format_price(o["price_egp"], user["currency"])
-        status = t(STATUS_KEY.get(o["status"], "status_pending"), lang)
-        lines.append(t("order_line", lang, id=o["id"], name=o["service_name_ar"], date=date, price=price, status=status))
-    await respond(target, "\n".join(lines))
-
-
-async def show_profile(target, lang, user):
-    joined = datetime.fromtimestamp(user["join_date"]).strftime("%Y-%m-%d")
-    currency_label = t("egp", lang) if user["currency"] == "egp" else t("usd", lang)
-    text = t(
-        "profile_title", lang,
-        id=user["telegram_id"],
-        phone=user["phone"] or t("not_set", lang),
-        joined=joined,
-        currency=currency_label,
-        total_orders=user["total_orders"],
-        completed=user["completed_orders"],
-        spent=format_price(user["total_spent"], user["currency"]),
-        balance=format_price(user["balance"], user["currency"]),
-        ref_earnings=format_price(user["referral_earnings"], user["currency"]),
-    )
-    await respond(target, text)
-
-
-async def show_referral(target, context, lang, user):
-    me = await context.bot.get_me()
-    link = f"https://t.me/{me.username}?start={user['referral_code']}"
-    text = t("referral_title", lang, bonus=f"{config.REFERRAL_BONUS_EGP:.0f} EGP", count=user["referral_count"], link=link)
-    await respond(target, text, disable_web_page_preview=True)
-
-
-TOPUP_RE = re.compile(r"^\s*(\S+)\s+([0-9]+(?:\.[0-9]+)?)\s*$")
-
-
-async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tg_user = update.effective_user
-    user = db.get_or_create_user(tg_user.id, tg_user.username)
-    if await guard_banned(update, user):
-        return
-    lang = user["lang"]
-    text_in = update.message.text.strip()
-    awaiting = context.user_data.get("awaiting")
-
-    # Step 1: are we mid-flow waiting for a specific free-text reply?
-    if awaiting:
-        kind = awaiting[0]
-
-        if kind == "email":
-            variant_id = awaiting[1]
-            email = text_in
-            if not EMAIL_RE.match(email):
-                await update.message.reply_text(t("invalid_email", lang))
-                return
-            variant = db.get_variant(variant_id)
-            if not variant:
-                context.user_data.pop("awaiting", None)
-                return
-            context.user_data.pop("awaiting", None)
-            await finalize_order(update.message, context, lang, user, variant, email=email)
-            return
-
-        elif kind == "topup":
-            method = awaiting[1]
-            m = TOPUP_RE.match(text_in)
-            if not m:
-                await update.message.reply_text(t("topup_bad_format", lang))
-                return
-            reference, amount_str = m.group(1), m.group(2)
-            amount = float(amount_str)
-            context.user_data.pop("awaiting", None)
-            topup_id = db.create_topup(user["id"], method, amount, reference)
-            await update.message.reply_text(t("topup_submitted", lang))
-            await notify_admin_new_topup(context, user, method, amount, reference, topup_id)
-            return
-
-    # Step 2: is this one of the persistent bottom-menu buttons?
-    action = MENU_LOOKUP.get(text_in)
-    if action == "services":
-        await show_categories(update.message, lang)
-    elif action == "profile":
-        await show_profile(update.message, lang, user)
-    elif action == "orders":
-        await show_orders(update.message, lang, user)
-    elif action == "balance":
-        bal = format_price(user["balance"], user["currency"])
-        await update.message.reply_text(t("balance_title", lang, balance=bal))
-    elif action == "topup":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Vodafone Cash 💵", callback_data="topup:vf")],
-            [InlineKeyboardButton("Binance Pay 💰", callback_data="topup:bp")],
-        ])
-        await update.message.reply_text(t("topup_title", lang), reply_markup=kb)
-    elif action == "support":
-        text = t("support_title", lang, user=config.SUPPORT_USERNAME, channel=config.SUPPORT_CHANNEL)
-        await update.message.reply_text(text)
-    elif action == "currency":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(t("egp", lang), callback_data="setcur:egp"),
-             InlineKeyboardButton(t("usd", lang), callback_data="setcur:usd")],
-        ])
-        await update.message.reply_text(t("currency_title", lang), reply_markup=kb)
-    elif action == "lang":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🇪🇬 العربية", callback_data="setlang:ar"),
-             InlineKeyboardButton("🇬🇧 English", callback_data="setlang:en")],
-        ])
-        await update.message.reply_text(t("lang_title", lang), reply_markup=kb)
-    elif action == "referral":
-        await show_referral(update.message, context, lang, user)
-    else:
-        # Unrecognized free text - just resurface the bottom menu
-        await update.message.reply_text(t("welcome", lang), reply_markup=main_reply_keyboard(lang))
-
-
-async def notify_admin_new_topup(context, user, method, amount, reference, topup_id):
-    from telegram import Bot
-    admin_bot = Bot(token=config.ADMIN_BOT_TOKEN)
-    method_label = "Vodafone Cash" if method == "vf" else "Binance Pay"
-    ref_label = "رقم الهاتف" if method == "vf" else "Order ID"
-    text = (
-        f"💳 طلب شحن رصيد #{topup_id}\n"
-        f"👤 العميل: {user['telegram_id']} (@{user['username']})\n"
-        f"💰 الطريقة: {method_label}\n"
-        f"{ref_label}: {reference}\n"
-        f"💵 المبلغ: {amount:.2f} EGP"
-    )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ تأكيد", callback_data=f"admin_topup_ok:{topup_id}"),
-         InlineKeyboardButton("❌ رفض", callback_data=f"admin_topup_no:{topup_id}")],
-    ])
-    try:
-        await admin_bot.send_message(config.ADMIN_ID, text, reply_markup=kb)
-    except TelegramError as e:
-        log.error("Failed to notify admin bot of new topup: %s", e)
-
-
-def build_app():
-    db.init_db()
-    app = ApplicationBuilder().token(config.CUSTOMER_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    return app
-
-
-if __name__ == "__main__":
-    application = build_app()
-    log.info("Customer bot starting...")
-    application.run_polling()
+def t(key: str, lang: str, **kwargs) -> str:
+    lang = lang if lang in ("ar", "en") else "ar"
+    text = STRINGS[key][lang]
+    return text.format(**kwargs) if kwargs else text
