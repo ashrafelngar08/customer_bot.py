@@ -408,6 +408,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kind = awaiting[0]
     text = update.message.text.strip()
 
+    NAME_KINDS = {"add_category", "add_service_name", "edit_service_name", "add_variant_name", "edit_variant_name"}
+    if kind in NAME_KINDS and any(e.type == "custom_emoji" for e in (update.message.entities or [])):
+        await update.message.reply_text(
+            "⚠️ الإيموجي ده إيموجي مميز (بريميوم) من تليجرام - مش شكل نصي حقيقي، لذلك بيتحفظ بشكل مختلف عن اللي شايفه، "
+            "وأصلاً أزرار القوائم مش بتعرضه صح. ابعت الاسم تاني باستخدام إيموجي عادي من لوحة الإيموجي الأساسية."
+        )
+        return
+
     if kind == "msg_one_id":
         context.user_data["awaiting"] = ("msg_one_text", int(text))
         await update.message.reply_text("أرسل نص الرسالة:")
