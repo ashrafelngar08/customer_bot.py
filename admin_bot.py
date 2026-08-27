@@ -116,6 +116,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_service_field(svc_id, "hidden", 0 if s["hidden"] else 1)
         await show_product_admin(query, svc_id)
 
+    elif data.startswith("svc:editname:"):
+        svc_id = int(data.split(":")[2])
+        context.user_data["awaiting"] = ("edit_service_name", svc_id)
+        await query.edit_message_text("أرسل الاسم الجديد للمنتج بالعربي:")
+
     elif data.startswith("var:add:"):
         svc_id = int(data.split(":")[2])
         context.user_data["awaiting"] = ("add_variant_name", svc_id)
@@ -142,6 +147,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         variant_id = int(data.split(":")[2])
         context.user_data["awaiting"] = ("edit_variant_price", variant_id)
         await query.edit_message_text("أرسل السعر الجديد بالجنيه المصري:")
+
+    elif data.startswith("var:editname:"):
+        variant_id = int(data.split(":")[2])
+        context.user_data["awaiting"] = ("edit_variant_name", variant_id)
+        await query.edit_message_text("أرسل الاسم الجديد للنسخة/المدة بالعربي:")
+
+    elif data.startswith("var:editdetails:"):
+        variant_id = int(data.split(":")[2])
+        context.user_data["awaiting"] = ("edit_variant_details", variant_id)
+        await query.edit_message_text("أرسل الوصف/التفاصيل الجديدة بالعربي:")
 
     elif data.startswith("var:stock:"):
         _, _, variant_id, delta = data.split(":")
@@ -245,6 +260,7 @@ async def show_product_admin(query, service_id):
             label += " (مخفي)"
         rows.append([InlineKeyboardButton(label, callback_data=f"var:view:{v['id']}")])
     rows.append([InlineKeyboardButton("➕ إضافة نسخة/مدة", callback_data=f"var:add:{service_id}")])
+    rows.append([InlineKeyboardButton("✏️ تعديل اسم المنتج", callback_data=f"svc:editname:{service_id}")])
     rows.append([
         InlineKeyboardButton("🗑️ حذف المنتج", callback_data=f"svc:delete:{service_id}"),
         InlineKeyboardButton("👁️ إخفاء/إظهار المنتج", callback_data=f"svc:hide:{service_id}"),
@@ -266,6 +282,8 @@ async def show_variant_admin(query, variant_id):
         f"👁️ الحالة: {'مخفي' if v['hidden'] else 'ظاهر'}"
     )
     rows = [
+        [InlineKeyboardButton("✏️ تعديل الاسم", callback_data=f"var:editname:{variant_id}"),
+         InlineKeyboardButton("✏️ تعديل الوصف", callback_data=f"var:editdetails:{variant_id}")],
         [InlineKeyboardButton("✏️ تعديل السعر", callback_data=f"var:editprice:{variant_id}")],
         [InlineKeyboardButton("➕ زيادة مخزون", callback_data=f"var:stock:{variant_id}:5"),
          InlineKeyboardButton("➖ إنقاص مخزون", callback_data=f"var:stock:{variant_id}:-5")],
@@ -491,6 +509,33 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_variant_field(variant_id, "price_egp", price)
         await update.message.reply_text(f"✅ تم تحديث السعر إلى {price:.2f} EGP")
 
+    elif kind == "edit_service_name":
+        svc_id = awaiting[1]
+        context.user_data.pop("awaiting", None)
+        name_ar = text
+        name_en = translate_to_english(name_ar)
+        db.update_service_field(svc_id, "name_ar", name_ar)
+        db.update_service_field(svc_id, "name_en", name_en)
+        await update.message.reply_text(f"✅ تم تحديث اسم المنتج إلى: {name_ar}")
+
+    elif kind == "edit_variant_name":
+        variant_id = awaiting[1]
+        context.user_data.pop("awaiting", None)
+        name_ar = text
+        name_en = translate_to_english(name_ar)
+        db.update_variant_field(variant_id, "name_ar", name_ar)
+        db.update_variant_field(variant_id, "name_en", name_en)
+        await update.message.reply_text(f"✅ تم تحديث اسم النسخة إلى: {name_ar}")
+
+    elif kind == "edit_variant_details":
+        variant_id = awaiting[1]
+        context.user_data.pop("awaiting", None)
+        details_ar = text
+        details_en = translate_to_english(details_ar)
+        db.update_variant_field(variant_id, "details_ar", details_ar)
+        db.update_variant_field(variant_id, "details_en", details_en)
+        await update.message.reply_text("✅ تم تحديث وصف النسخة.")
+
     elif kind == "add_balance":
         user_id = awaiting[1]
         context.user_data.pop("awaiting", None)
@@ -524,3 +569,4 @@ if __name__ == "__main__":
     application = build_app()
     log.info("Admin bot starting...")
     application.run_polling()
+
