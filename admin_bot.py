@@ -311,6 +311,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "orders:pending":
         await show_pending_orders(query)
 
+    elif data.startswith("order:view:"):
+        order_id = int(data.split(":")[2])
+        await show_order_admin(query, order_id)
+
     elif data.startswith("admin_deliver:"):
         order_id = int(data.split(":")[1])
         context.user_data["awaiting"] = ("deliver_note", order_id)
@@ -522,12 +526,42 @@ async def show_pending_orders(query):
         await query.edit_message_text("لا توجد طلبات قيد التنفيذ حاليًا.", reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("🔙 رجوع", callback_data="main")]]))
         return
-    lines = ["📦 الطلبات قيد التنفيذ:\n"]
+    rows = []
     for o in rows_:
-        lines.append(f"#{o['id']} — {o['service_name_ar']} — {o['price_egp']:.0f} EGP")
-    lines.append("\nاستخدم الأزرار تحت رسالة الطلب نفسها للتسليم أو الاسترجاع.")
-    await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔙 رجوع", callback_data="main")]]))
+        label = f"#{o['id']} — {o['service_name_ar']} — {o['price_egp']:.0f} EGP"
+        rows.append([InlineKeyboardButton(label, callback_data=f"order:view:{o['id']}")])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main")])
+    await query.edit_message_text("📦 الطلبات قيد التنفيذ - دوس على أي طلب عشان تسلّمه أو تسترجعه:",
+                                   reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def show_order_admin(query, order_id):
+    o = db.get_order(order_id)
+    if not o:
+        await query.edit_message_text("⚠️ الطلب غير موجود.", reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔙 رجوع", callback_data="orders:pending")]]))
+        return
+    user = db.get_user_by_id(o["user_id"])
+    lines = [
+        f"📦 طلب #{o['id']}",
+        f"👤 العميل: {user['telegram_id']} (@{user['username']})" if user else "👤 العميل: غير معروف",
+        f"🛍️ الخدمة: {o['service_name_ar']}",
+        f"💵 السعر: {o['price_egp']:.2f} EGP",
+        f"📌 الحالة: {o['status']}",
+    ]
+    if o.get("email"):
+        lines.append(f"📧 الإيميل: {o['email']}")
+    if o.get("link"):
+        lines.append(f"🔗 الرابط: {o['link']}")
+    rows = []
+    if o["status"] == "in_progress":
+        rows.append([
+            InlineKeyboardButton("✅ تم التسليم", callback_data=f"admin_deliver:{o['id']}"),
+            InlineKeyboardButton("♻️ إلغاء واسترجاع", callback_data=f"admin_refund:{o['id']}"),
+        ])
+    rows.append([InlineKeyboardButton("✉️ راسل العميل", callback_data=f"admin_msg_order:{o['id']}")])
+    rows.append([InlineKeyboardButton("🔙 رجوع للطلبات", callback_data="orders:pending")])
+    await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows))
 
 
 # ---------------- Notifications back to the customer bot ----------------
