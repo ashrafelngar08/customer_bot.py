@@ -313,18 +313,26 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("admin_deliver:"):
         order_id = int(data.split(":")[1])
-        db.set_order_status(order_id, "delivered")
-        await deliver_notify_customer(context, order_id)
-        await query.edit_message_text(f"✅ تم تعليم الطلب #{order_id} كـ (تم التسليم) وتم إشعار العميل.")
+        context.user_data["awaiting"] = ("deliver_note", order_id)
+        await query.edit_message_text(
+            "اكتب رسالة تسليم للعميل (تفاصيل، بيانات الحساب، إلخ)، أو ابعت \"تخطي\" للرسالة الافتراضية:"
+        )
 
     elif data.startswith("admin_refund:"):
         order_id = int(data.split(":")[1])
-        order = db.refund_order(order_id)
-        if order:
-            await refund_notify_customer(context, order)
-            await query.edit_message_text(f"♻️ تم إلغاء الطلب #{order_id} واسترجاع المبلغ للعميل.")
-        else:
-            await query.edit_message_text("⚠️ الطلب غير موجود أو تم استرجاعه بالفعل.")
+        context.user_data["awaiting"] = ("refund_note", order_id)
+        await query.edit_message_text(
+            "اكتب سبب الإلغاء/الاسترجاع عشان يوصل للعميل، أو ابعت \"تخطي\" للرسالة الافتراضية:"
+        )
+
+    elif data.startswith("admin_msg_order:"):
+        order_id = int(data.split(":")[1])
+        order = db.get_order(order_id)
+        if not order:
+            await query.answer("⚠️ الطلب غير موجود.", show_alert=True)
+            return
+        context.user_data["awaiting"] = ("msg_order_text", order_id)
+        await query.edit_message_text(f"✉️ أرسل نص الرسالة اللي تحب تبعتها للعميل بخصوص الطلب #{order_id}:")
 
     elif data.startswith("admin_topup_ok:"):
         topup_id = int(data.split(":")[1])
@@ -528,24 +536,28 @@ def customer_bot() -> Bot:
     return Bot(token=config.CUSTOMER_BOT_TOKEN)
 
 
-async def deliver_notify_customer(context, order_id):
+async def deliver_notify_customer(context, order_id, note=None):
     order = db.get_order(order_id)
     user = db.get_user_by_id(order["user_id"])
     lang = user["lang"]
     text = (f"✅ تم تسليم طلبك #{order_id} ({order['service_name_ar']}) بنجاح!" if lang == "ar"
             else f"✅ Your order #{order_id} ({order['service_name_ar']}) has been delivered!")
+    if note:
+        text += f"\n\n{note}"
     try:
         await customer_bot().send_message(user["telegram_id"], text)
     except TelegramError as e:
         log.error("Failed notifying customer of delivery: %s", e)
 
 
-async def refund_notify_customer(context, order):
+async def refund_notify_customer(context, order, note=None):
     user = db.get_user_by_id(order["user_id"])
     lang = user["lang"]
     text = (f"♻️ تم إلغاء طلبك #{order['id']} ({order['service_name_ar']}) وإعادة {order['price_egp']:.2f} جنيه لرصيدك."
             if lang == "ar" else
             f"♻️ Your order #{order['id']} ({order['service_name_ar']}) was cancelled and {order['price_egp']:.2f} EGP was refunded to your balance.")
+    if note:
+        text += f"\n\n{note}"
     try:
         await customer_bot().send_message(user["telegram_id"], text)
     except TelegramError as e:
@@ -636,6 +648,39 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ تم الإرسال.")
         except TelegramError as e:
             await update.message.reply_text(f"⚠️ فشل الإرسال: {e}")
+
+    elif kind == "msg_order_text":
+        order_id = awaiting[1]
+        context.user_data.pop("awaiting", None)
+        order = db.get_order(order_id)
+        if not order:
+            await update.message.reply_text("⚠️ الطلب غير موجود.")
+            return
+        user = db.get_user_by_id(order["user_id"])
+        try:
+            await customer_bot().send_message(user["telegram_id"], f"✉️ بخصوص طلبك #{order_id}:\n\n{text}")
+            await update.message.reply_text("✅ تم إرسال الرسالة للعميل.")
+        except TelegramError as e:
+            await update.message.reply_text(f"⚠️ فشل الإرسال: {e}")
+
+    elif kind == "deliver_note":
+        order_id = awaiting[1]
+        context.user_data.pop("awaiting", None)
+        note = None if text.strip() in ("تخطي", "skip", "Skip") else text.strip()
+        db.set_order_status(order_id, "delivered")
+        await deliver_notify_customer(context, order_id, note=note)
+        await update.message.reply_text(f"✅ تم تعليم الطلب #{order_id} كـ (تم التسليم) وتم إشعار العميل.")
+
+    elif kind == "refund_note":
+        order_id = awaiting[1]
+        context.user_data.pop("awaiting", None)
+        note = None if text.strip() in ("تخطي", "skip", "Skip") else text.strip()
+        order = db.refund_order(order_id)
+        if order:
+            await refund_notify_customer(context, order, note=note)
+            await update.message.reply_text(f"♻️ تم إلغاء الطلب #{order_id} واسترجاع المبلغ للعميل.")
+        else:
+            await update.message.reply_text("⚠️ الطلب غير موجود أو تم استرجاعه بالفعل.")
 
     elif kind == "msg_all":
         context.user_data.pop("awaiting", None)
@@ -861,4 +906,3 @@ if __name__ == "__main__":
     application = build_app()
     log.info("Admin bot starting...")
     application.run_polling()
-
