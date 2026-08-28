@@ -174,7 +174,10 @@ async def show_categories(target, lang):
     buttons = []
     for c in cats:
         name = c["name_ar"] if lang == "ar" else c["name_en"]
-        buttons.append(InlineKeyboardButton(f"{c['emoji']} {name}".strip(), callback_data=f"cat:{c['id']}"))
+        buttons.append(InlineKeyboardButton(
+            f"{c['emoji']} {name}".strip(), callback_data=f"cat:{c['id']}",
+            icon_custom_emoji_id=c.get("icon_custom_emoji_id") or None,
+        ))
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     await respond(target, t("choose_category", lang), reply_markup=InlineKeyboardMarkup(rows))
 
@@ -188,7 +191,10 @@ async def show_services(query, lang, cat_id):
     for s in services:
         name = s["name_ar"] if lang == "ar" else s["name_en"]
         label = name if s["stock"] != 0 else f"{name} ❌"
-        buttons.append(InlineKeyboardButton(label, callback_data=f"svc:{s['id']}"))
+        buttons.append(InlineKeyboardButton(
+            label, callback_data=f"svc:{s['id']}",
+            icon_custom_emoji_id=s.get("icon_custom_emoji_id") or None,
+        ))
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton(t("back", lang), callback_data="cats:root")])
     await query.edit_message_text(t("choose_service", lang), reply_markup=InlineKeyboardMarkup(rows))
