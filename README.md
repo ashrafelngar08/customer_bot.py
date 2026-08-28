@@ -76,6 +76,30 @@ top-ups but not touch pricing)? Add a new role key to `ROLE_PERMISSIONS` in
 a choice when adding the sub-admin — the plumbing (DB table, decorator,
 menu-by-role) is already there to support more than one role.
 
+### Menu icons (the "app-logo" look, like other stores' bots)
+
+Category and product buttons can now show a small icon before their text —
+the same look you see on bots like X Pro Store. This uses Telegram's
+`icon_custom_emoji_id` button field (Bot API 9.4+), so `requirements.html`
+now pins `python-telegram-bot>=22.8` (the old pin, `21.6`, doesn't have
+this field at all — and had a typo, `python-tebinary-bot`, that would've
+made `pip install -r requirements.txt` fail outright; fixed).
+
+**Hard requirement, not optional:** button icons only render if **the bot
+owner's personal Telegram account** (the human behind `ADMIN_ID`) has an
+active **Telegram Premium** subscription, or the bot has a username
+purchased on Fragment. Without that, any icon you set is silently ignored
+by Telegram and the button just shows plain text — this is a Telegram-side
+restriction, nothing in the code can work around it.
+
+**To set an icon:** from **🗂️ إدارة الأصناف**, open a category → **🖼️
+أيقونة الصنف**, or open a product → **🖼️ تعديل الأيقونة**. When adding a
+new category/product you're asked for the icon right after the name. Send
+the custom emoji by itself (tap it from the emoji panel's "premium" tab,
+or forward a message that contains it) — plain/standard emoji won't work
+here since they don't have a `custom_emoji_id`; those still go in the
+regular `emoji` field for categories. Send "تخطي" to skip/clear it.
+
 ## Data safety
 
 All state lives in `shop.db`, entirely separate from the bot code (per your
