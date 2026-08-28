@@ -32,6 +32,8 @@ STRINGS = {
     },
     "ask_email": {"ar": "📧 من فضلك أرسل الإيميل المطلوب تفعيل الخدمة عليه:", "en": "📧 Please send the email to activate this service on:"},
     "invalid_email": {"ar": "⚠️ الإيميل غير صحيح، حاول تاني.", "en": "⚠️ That doesn't look like a valid email, try again."},
+    "ask_link": {"ar": "🔗 من فضلك أرسل رابط الحساب/الصفحة اللي هنقلها لك (لازم يكون رابط واحد من غير مسافات):", "en": "🔗 Please send the link to the account/page (a single link, no spaces):"},
+    "invalid_link": {"ar": "⚠️ الرابط ده مش شكله صح، حاول تاني.", "en": "⚠️ That doesn't look like a valid link, try again."},
     "order_placed": {
         "ar": "✅ تم استلام طلبك بنجاح!\nالخدمة: {name}\nالسعر: {price}\nرقم الطلب: #{order_id}\n\nسيتم تنفيذه في أقرب وقت.",
         "en": "✅ Your order was placed successfully!\nService: {name}\nPrice: {price}\nOrder #{order_id}\n\nIt will be processed shortly.",
