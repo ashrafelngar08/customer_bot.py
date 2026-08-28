@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS variants (
     price_egp REAL NOT NULL,
     stock INTEGER NOT NULL DEFAULT -1,
     requires_email INTEGER NOT NULL DEFAULT 0,
+    requires_link INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0
 );
@@ -91,6 +92,7 @@ CREATE TABLE IF NOT EXISTS orders (
     price_egp REAL NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     email TEXT,
+    link TEXT,
     created_at BIGINT NOT NULL,
     delivered_at BIGINT,
     note TEXT
@@ -169,6 +171,11 @@ def init_db():
         # icons on buttons, Bot API 9.4+) were supported.
         conn.execute("ALTER TABLE categories ADD COLUMN IF NOT EXISTS icon_custom_emoji_id TEXT")
         conn.execute("ALTER TABLE services ADD COLUMN IF NOT EXISTS icon_custom_emoji_id TEXT")
+        # Migration for DBs created before "requires a link from the customer"
+        # (e.g. Facebook page ownership-transfer link) was supported, alongside
+        # the pre-existing "requires an email" option.
+        conn.execute("ALTER TABLE variants ADD COLUMN IF NOT EXISTS requires_link INTEGER NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS link TEXT")
         # Seed starter categories/services only on first run
         row = conn.execute("SELECT COUNT(*) c FROM categories").fetchone()
         if row["c"] == 0:
@@ -410,13 +417,14 @@ def get_variant(variant_id: int):
         return dict(row) if row else None
 
 
-def add_variant(service_id, name_ar, name_en, details_ar, details_en, price_egp, stock=-1, requires_email=0):
+def add_variant(service_id, name_ar, name_en, details_ar, details_en, price_egp, stock=-1, requires_email=0,
+                 requires_link=0):
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO variants
-               (service_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email)
-               VALUES (?,?,?,?,?,?,?,?) RETURNING id""",
-            (service_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email),
+               (service_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email, requires_link)
+               VALUES (?,?,?,?,?,?,?,?,?) RETURNING id""",
+            (service_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email, requires_link),
         )
         return cur.lastrowid
 
@@ -427,7 +435,8 @@ def delete_variant(variant_id: int):
 
 
 def update_variant_field(variant_id: int, field: str, value):
-    allowed = {"name_ar", "name_en", "details_ar", "details_en", "price_egp", "stock", "requires_email", "hidden"}
+    allowed = {"name_ar", "name_en", "details_ar", "details_en", "price_egp", "stock", "requires_email",
+               "requires_link", "hidden"}
     if field not in allowed:
         raise ValueError("field not allowed")
     with get_conn() as conn:
@@ -444,12 +453,12 @@ def adjust_variant_stock(variant_id: int, delta: int):
 
 # ---------------- Orders ----------------
 
-def create_order(user_id, service_id, variant_id, service_name_ar, price_egp, email=None):
+def create_order(user_id, service_id, variant_id, service_name_ar, price_egp, email=None, link=None):
     with get_conn() as conn:
         cur = conn.execute(
-            """INSERT INTO orders (user_id, service_id, variant_id, service_name_ar, price_egp, email, created_at, status)
-               VALUES (?,?,?,?,?,?,?, 'in_progress') RETURNING id""",
-            (user_id, service_id, variant_id, service_name_ar, price_egp, email, int(time.time())),
+            """INSERT INTO orders (user_id, service_id, variant_id, service_name_ar, price_egp, email, link, created_at, status)
+               VALUES (?,?,?,?,?,?,?,?, 'in_progress') RETURNING id""",
+            (user_id, service_id, variant_id, service_name_ar, price_egp, email, link, int(time.time())),
         )
         conn.execute("UPDATE users SET total_orders = total_orders + 1, total_spent = total_spent + ? WHERE id=?",
                      (price_egp, user_id))
@@ -576,3 +585,4 @@ def list_admins():
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM admins ORDER BY added_at").fetchall()
         return [dict(r) for r in rows]
+
