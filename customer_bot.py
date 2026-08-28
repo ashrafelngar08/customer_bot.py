@@ -329,6 +329,7 @@ async def notify_admin_new_order(context, user, service, variant, order_id, emai
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ تم التسليم", callback_data=f"admin_deliver:{order_id}"),
          InlineKeyboardButton("♻️ إلغاء واسترجاع", callback_data=f"admin_refund:{order_id}")],
+        [InlineKeyboardButton("✉️ راسل العميل", callback_data=f"admin_msg_order:{order_id}")],
     ])
     try:
         await admin_bot.send_message(config.ADMIN_ID, text, reply_markup=kb)
