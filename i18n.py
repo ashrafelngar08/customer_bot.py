@@ -56,19 +56,18 @@ STRINGS = {
     "currency_saved": {"ar": "تم الحفظ ✅ الأسعار هتتعرض دلوقتي بالـ {cur}", "en": "Saved ✅ Prices will now show in {cur}"},
 
     "topup_title": {"ar": "💳 اختر طريقة إضافة الرصيد:", "en": "💳 Choose a top-up method:"},
-    "copy_number": {"ar": "📋 نسخ الرقم", "en": "📋 Copy number"},
     "vf_instructions": {
-        "ar": "حوّل المبلغ إلى المحفظة التالية (دوس الزرار تحت عشان تنسخ الرقم):\n📱 `{number}`",
-        "en": "Send the amount to this wallet (tap the button below to copy the number):\n📱 `{number}`",
+        "ar": "أرسل المبلغ إلى المحفظة ثم اكتب المبلغ هنا، وبعدها اكتب رقم الهاتف الذي حولت منه.\n\n💰 أرسل المبلغ إلى المحفظة التالية:",
+        "en": "Send the amount to the wallet then type the amount here, and after that type the phone number you sent from.\n\n💰 Send the amount to this wallet:",
     },
     "bp_instructions": {
-        "ar": "حوّل المبلغ إلى Binance ID التالي (دوس الزرار تحت عشان تنسخ الـ ID):\n🆔 `{bid}`",
-        "en": "Send the amount to this Binance ID (tap the button below to copy it):\n🆔 `{bid}`",
+        "ar": "أرسل المبلغ إلى الحساب ثم اكتب المبلغ هنا، وبعدها اكتب رقم الطلب (Order ID).\n\n💰 حوّل المبلغ إلى Binance ID التالي:",
+        "en": "Send the amount to the account then type the amount here, and after that type the Order ID.\n\n💰 Send the amount to this Binance ID:",
     },
-    "ask_topup_amount": {"ar": "1️⃣ ابعت المبلغ اللي حولته (أرقام فقط):", "en": "1️⃣ Send the amount you sent (numbers only):"},
+    "ask_topup_amount": {"ar": "اكتب المبلغ الذي حولته الآن.", "en": "Type the amount you sent now."},
     "invalid_amount": {"ar": "⚠️ من فضلك ابعت رقم صحيح للمبلغ.", "en": "⚠️ Please send a valid number for the amount."},
-    "ask_topup_reference_vf": {"ar": "2️⃣ ابعت رقم الهاتف اللي حولت منه:", "en": "2️⃣ Send the phone number you sent from:"},
-    "ask_topup_reference_bp": {"ar": "2️⃣ ابعت رقم الطلب (Order ID):", "en": "2️⃣ Send the Order ID:"},
+    "ask_topup_reference_vf": {"ar": "اكتب رقم الهاتف الذي حولت منه.", "en": "Type the phone number you sent from."},
+    "ask_topup_reference_bp": {"ar": "اكتب رقم الطلب (Order ID).", "en": "Type the Order ID."},
     "topup_bad_format": {"ar": "⚠️ الصيغة غلط، حاول تاني.", "en": "⚠️ Wrong format, try again."},
     "topup_submitted": {
         "ar": "✅ تم إرسال طلبك للإدارة، هيتم تأكيده يدويًا خلال وقت قصير وسيُضاف الرصيد تلقائيًا بعد التأكيد.",
@@ -128,3 +127,4 @@ def t(key: str, lang: str, **kwargs) -> str:
     lang = lang if lang in ("ar", "en") else "ar"
     text = STRINGS[key][lang]
     return text.format(**kwargs) if kwargs else text
+
