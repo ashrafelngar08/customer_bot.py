@@ -30,7 +30,8 @@ ROLE_PERMISSIONS = {
     ROLE_SERVICES: {
         "callback_prefixes": ("main", "cats:", "svc:", "var:"),
         "awaiting_kinds": {
-            "add_category", "add_service_name", "edit_service_name",
+            "add_category", "add_category_icon", "add_service_name", "add_service_icon",
+            "edit_service_name", "edit_category_icon", "edit_service_icon",
             "add_variant_name", "add_variant_details", "add_variant_price",
             "add_variant_stock", "add_variant_email", "edit_variant_price",
             "edit_variant_name", "edit_variant_details",
@@ -72,6 +73,25 @@ def require_permission(role: str, kind: str, value: str) -> bool:
     if kind == "callback":
         return value == "main" or any(value.startswith(p) for p in perms["callback_prefixes"] if p != "main")
     return value in perms["awaiting_kinds"]
+
+
+ICON_PROMPT = (
+    "🖼️ ابعت الإيموجي المميز (Premium/Animated) اللي عايزه يظهر كأيقونة قبل اسم الزرار ده، "
+    "لوحده في رسالة (اضغطه من لوحة الإيموجي المميزة، أو حوّل - Forward - رسالة فيها).\n"
+    "أو ابعت \"تخطي\" لو مش عايز أيقونة / عايز تشيل الموجودة.\n\n"
+    "⚠️ مهم: الأيقونة دي مش هتظهر إلا لو حساب صاحب البوت (ADMIN_ID) عنده Telegram Premium فعّال، "
+    "أو البوت مشتري يوزر من Fragment."
+)
+
+
+def extract_custom_emoji_id(message) -> str | None:
+    """Pulls the first custom_emoji entity's ID out of a message, whether it
+    was typed/pasted directly or arrived via Forward (both carry the entity
+    the same way in the Bot API)."""
+    for e in (message.entities or []):
+        if e.type == "custom_emoji" and getattr(e, "custom_emoji_id", None):
+            return e.custom_emoji_id
+    return None
 
 
 def translate_to_english(text: str) -> str:
@@ -156,6 +176,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.set_category_hidden(cat_id, not cat["hidden"])
         await show_categories_admin(query)
 
+    elif data.startswith("cats:editicon:"):
+        cat_id = int(data.split(":")[2])
+        context.user_data["awaiting"] = ("edit_category_icon", cat_id)
+        await query.edit_message_text(ICON_PROMPT)
+
     elif data.startswith("svc:add:"):
         cat_id = int(data.split(":")[2])
         context.user_data["awaiting"] = ("add_service_name", cat_id)
@@ -182,6 +207,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         svc_id = int(data.split(":")[2])
         context.user_data["awaiting"] = ("edit_service_name", svc_id)
         await query.edit_message_text("أرسل الاسم الجديد للمنتج بالعربي:")
+
+    elif data.startswith("svc:editicon:"):
+        svc_id = int(data.split(":")[2])
+        context.user_data["awaiting"] = ("edit_service_icon", svc_id)
+        await query.edit_message_text(ICON_PROMPT)
 
     elif data.startswith("var:add:"):
         svc_id = int(data.split(":")[2])
@@ -316,7 +346,10 @@ async def show_categories_admin(query):
     rows = []
     for c in cats:
         label = f"{c['emoji']} {c['name_ar']}" + (" (مخفي)" if c["hidden"] else "")
-        rows.append([InlineKeyboardButton(label, callback_data=f"cats:view:{c['id']}")])
+        rows.append([InlineKeyboardButton(
+            label, callback_data=f"cats:view:{c['id']}",
+            icon_custom_emoji_id=c.get("icon_custom_emoji_id") or None,
+        )])
     rows.append([InlineKeyboardButton("➕ إضافة صنف جديد", callback_data="cats:add")])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main")])
     await query.edit_message_text("🗂️ الأصناف الحالية:", reply_markup=InlineKeyboardMarkup(rows))
@@ -330,12 +363,16 @@ async def show_services_admin(query, cat_id):
         label = s["name_ar"]
         if s["hidden"]:
             label += " (مخفي)"
-        rows.append([InlineKeyboardButton(label, callback_data=f"svc:view:{s['id']}")])
+        rows.append([InlineKeyboardButton(
+            label, callback_data=f"svc:view:{s['id']}",
+            icon_custom_emoji_id=s.get("icon_custom_emoji_id") or None,
+        )])
     rows.append([InlineKeyboardButton("➕ إضافة منتج", callback_data=f"svc:add:{cat_id}")])
     rows.append([
         InlineKeyboardButton("🗑️ حذف الصنف", callback_data=f"cats:delete:{cat_id}"),
         InlineKeyboardButton("👁️ إخفاء/إظهار الصنف", callback_data=f"cats:hide:{cat_id}"),
     ])
+    rows.append([InlineKeyboardButton("🖼️ أيقونة الصنف", callback_data=f"cats:editicon:{cat_id}")])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="cats:root")])
     await query.edit_message_text(f"منتجات صنف: {cat['name_ar']}", reply_markup=InlineKeyboardMarkup(rows))
 
@@ -352,7 +389,10 @@ async def show_product_admin(query, service_id):
             label += " (مخفي)"
         rows.append([InlineKeyboardButton(label, callback_data=f"var:view:{v['id']}")])
     rows.append([InlineKeyboardButton("➕ إضافة نسخة/مدة", callback_data=f"var:add:{service_id}")])
-    rows.append([InlineKeyboardButton("✏️ تعديل اسم المنتج", callback_data=f"svc:editname:{service_id}")])
+    rows.append([
+        InlineKeyboardButton("✏️ تعديل اسم المنتج", callback_data=f"svc:editname:{service_id}"),
+        InlineKeyboardButton("🖼️ تعديل الأيقونة", callback_data=f"svc:editicon:{service_id}"),
+    ])
     rows.append([
         InlineKeyboardButton("🗑️ حذف المنتج", callback_data=f"svc:delete:{service_id}"),
         InlineKeyboardButton("👁️ إخفاء/إظهار المنتج", callback_data=f"svc:hide:{service_id}"),
@@ -572,25 +612,79 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ تم الإرسال لـ {sent} عميل. فشل: {failed}")
 
     elif kind == "add_category":
-        context.user_data.pop("awaiting", None)
         parts = [p.strip() for p in text.split("|")]
         if len(parts) < 2:
             await update.message.reply_text("⚠️ صيغة غلط، حاول تاني بالشكل: عربي | English | إيموجي")
             return
         name_ar, name_en = parts[0], parts[1]
         emoji = parts[2] if len(parts) > 2 else ""
-        db.add_category(name_ar, name_en, emoji)
+        context.user_data["awaiting"] = ("add_category_icon", name_ar, name_en, emoji)
+        await update.message.reply_text(ICON_PROMPT)
+
+    elif kind == "add_category_icon":
+        name_ar, name_en, emoji = awaiting[1], awaiting[2], awaiting[3]
+        context.user_data.pop("awaiting", None)
+        icon_id = None if text in ("تخطي", "skip", "Skip") else extract_custom_emoji_id(update.message)
+        if icon_id is None and text not in ("تخطي", "skip", "Skip"):
+            await update.message.reply_text(
+                "⚠️ مش شايف إيموجي مميز في الرسالة دي. جرب تاني أو ابعت \"تخطي\"."
+            )
+            context.user_data["awaiting"] = ("add_category_icon", name_ar, name_en, emoji)
+            return
+        db.add_category(name_ar, name_en, emoji, icon_custom_emoji_id=icon_id)
         await update.message.reply_text(f"✅ تم إضافة الصنف: {name_ar}")
 
     elif kind == "add_service_name":
         cat_id = awaiting[1]
-        context.user_data.pop("awaiting", None)
         name_ar = text
+        context.user_data["awaiting"] = ("add_service_icon", cat_id, name_ar)
+        await update.message.reply_text(ICON_PROMPT)
+
+    elif kind == "add_service_icon":
+        cat_id, name_ar = awaiting[1], awaiting[2]
+        context.user_data.pop("awaiting", None)
+        icon_id = None if text in ("تخطي", "skip", "Skip") else extract_custom_emoji_id(update.message)
+        if icon_id is None and text not in ("تخطي", "skip", "Skip"):
+            await update.message.reply_text(
+                "⚠️ مش شايف إيموجي مميز في الرسالة دي. جرب تاني أو ابعت \"تخطي\"."
+            )
+            context.user_data["awaiting"] = ("add_service_icon", cat_id, name_ar)
+            return
         name_en = translate_to_english(name_ar)
-        db.add_service(cat_id, name_ar, name_en)
+        db.add_service(cat_id, name_ar, name_en, icon_custom_emoji_id=icon_id)
         await update.message.reply_text(
             f"✅ تم إضافة المنتج: {name_ar}\nدلوقتي ضيفله نسخة/مدة واحدة على الأقل من زر ➕ إضافة نسخة/مدة عشان يبقى قابل للشراء."
         )
+
+    elif kind == "edit_category_icon":
+        cat_id = awaiting[1]
+        context.user_data.pop("awaiting", None)
+        if text in ("تخطي", "skip", "Skip"):
+            db.update_category_field(cat_id, "icon_custom_emoji_id", None)
+            await update.message.reply_text("✅ تم إلغاء الأيقونة.")
+            return
+        icon_id = extract_custom_emoji_id(update.message)
+        if icon_id is None:
+            await update.message.reply_text("⚠️ مش شايف إيموجي مميز في الرسالة دي. جرب تاني أو ابعت \"تخطي\".")
+            context.user_data["awaiting"] = ("edit_category_icon", cat_id)
+            return
+        db.update_category_field(cat_id, "icon_custom_emoji_id", icon_id)
+        await update.message.reply_text("✅ تم تحديث أيقونة الصنف.")
+
+    elif kind == "edit_service_icon":
+        svc_id = awaiting[1]
+        context.user_data.pop("awaiting", None)
+        if text in ("تخطي", "skip", "Skip"):
+            db.update_service_field(svc_id, "icon_custom_emoji_id", None)
+            await update.message.reply_text("✅ تم إلغاء الأيقونة.")
+            return
+        icon_id = extract_custom_emoji_id(update.message)
+        if icon_id is None:
+            await update.message.reply_text("⚠️ مش شايف إيموجي مميز في الرسالة دي. جرب تاني أو ابعت \"تخطي\".")
+            context.user_data["awaiting"] = ("edit_service_icon", svc_id)
+            return
+        db.update_service_field(svc_id, "icon_custom_emoji_id", icon_id)
+        await update.message.reply_text("✅ تم تحديث أيقونة المنتج.")
 
     elif kind == "add_variant_name":
         svc_id = awaiting[1]
