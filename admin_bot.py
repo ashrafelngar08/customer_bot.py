@@ -30,7 +30,8 @@ ROLE_PERMISSIONS = {
     ROLE_SERVICES: {
         "callback_prefixes": ("main", "cats:", "svc:", "var:"),
         "awaiting_kinds": {
-            "add_category", "add_category_icon", "add_service_name", "add_service_icon",
+            "add_category", "add_category_icon", "edit_category_name",
+            "add_service_name", "add_service_icon",
             "edit_service_name", "edit_category_icon", "edit_service_icon",
             "add_variant_name", "add_variant_details", "add_variant_price",
             "add_variant_stock", "add_variant_email", "edit_variant_price",
@@ -180,6 +181,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cat_id = int(data.split(":")[2])
         context.user_data["awaiting"] = ("edit_category_icon", cat_id)
         await query.edit_message_text(ICON_PROMPT)
+
+    elif data.startswith("cats:editname:"):
+        cat_id = int(data.split(":")[2])
+        context.user_data["awaiting"] = ("edit_category_name", cat_id)
+        await query.edit_message_text(
+            "أرسل بيانات الصنف الجديدة بالشكل:\nالاسم بالعربي | English | إيموجي (اختياري)\n"
+            "مثال: خدمات التصميم | Design Services | 🎨\n"
+            "(لو سبت الإيموجي فاضي، هيفضل زي ما هو)"
+        )
 
     elif data.startswith("svc:add:"):
         cat_id = int(data.split(":")[2])
@@ -369,10 +379,13 @@ async def show_services_admin(query, cat_id):
         )])
     rows.append([InlineKeyboardButton("➕ إضافة منتج", callback_data=f"svc:add:{cat_id}")])
     rows.append([
+        InlineKeyboardButton("✏️ تعديل الاسم", callback_data=f"cats:editname:{cat_id}"),
+        InlineKeyboardButton("🖼️ أيقونة الصنف", callback_data=f"cats:editicon:{cat_id}"),
+    ])
+    rows.append([
         InlineKeyboardButton("🗑️ حذف الصنف", callback_data=f"cats:delete:{cat_id}"),
         InlineKeyboardButton("👁️ إخفاء/إظهار الصنف", callback_data=f"cats:hide:{cat_id}"),
     ])
-    rows.append([InlineKeyboardButton("🖼️ أيقونة الصنف", callback_data=f"cats:editicon:{cat_id}")])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="cats:root")])
     await query.edit_message_text(f"منتجات صنف: {cat['name_ar']}", reply_markup=InlineKeyboardMarkup(rows))
 
@@ -550,7 +563,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 مفيش صلاحية لده.")
         return
 
-    NAME_KINDS = {"add_category", "add_service_name", "edit_service_name", "add_variant_name", "edit_variant_name"}
+    NAME_KINDS = {"add_category", "edit_category_name", "add_service_name", "edit_service_name", "add_variant_name", "edit_variant_name"}
     is_forwarded = update.message.forward_origin is not None
     if kind in NAME_KINDS and not is_forwarded and any(
         e.type == "custom_emoji" for e in (update.message.entities or [])
@@ -633,6 +646,20 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         db.add_category(name_ar, name_en, emoji, icon_custom_emoji_id=icon_id)
         await update.message.reply_text(f"✅ تم إضافة الصنف: {name_ar}")
+
+    elif kind == "edit_category_name":
+        cat_id = awaiting[1]
+        context.user_data.pop("awaiting", None)
+        parts = [p.strip() for p in text.split("|")]
+        if len(parts) < 2:
+            await update.message.reply_text("⚠️ صيغة غلط، حاول تاني بالشكل: عربي | English | إيموجي (اختياري)")
+            return
+        name_ar, name_en = parts[0], parts[1]
+        db.update_category_field(cat_id, "name_ar", name_ar)
+        db.update_category_field(cat_id, "name_en", name_en)
+        if len(parts) > 2 and parts[2]:
+            db.update_category_field(cat_id, "emoji", parts[2])
+        await update.message.reply_text(f"✅ تم تحديث اسم الصنف إلى: {name_ar}")
 
     elif kind == "add_service_name":
         cat_id = awaiting[1]
