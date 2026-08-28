@@ -34,7 +34,7 @@ ROLE_PERMISSIONS = {
             "add_service_name", "add_service_icon",
             "edit_service_name", "edit_category_icon", "edit_service_icon",
             "add_variant_name", "add_variant_details", "add_variant_price",
-            "add_variant_stock", "add_variant_email", "edit_variant_price",
+            "add_variant_stock", "add_variant_requires", "edit_variant_requires", "edit_variant_price",
             "edit_variant_name", "edit_variant_details",
         },
     },
@@ -93,6 +93,25 @@ def extract_custom_emoji_id(message) -> str | None:
         if e.type == "custom_emoji" and getattr(e, "custom_emoji_id", None):
             return e.custom_emoji_id
     return None
+
+
+REQUIRES_PROMPT = (
+    "المنتج/النسخة دي محتاجة حاجة من العميل بعد الدفع عشان تقدر تسلّمها؟\n"
+    "1️⃣ لا — تسليم عادي\n"
+    "2️⃣ إيميل — (زي اشتراكات نتفلكس/جيميناي)\n"
+    "3️⃣ رابط — رابط حساب العميل (زي نقل ملكية صفحة فيسبوك)\n\n"
+    "ابعت رقم أو كلمة (لا / إيميل / رابط)."
+)
+
+
+def parse_requires_choice(text: str):
+    """Returns (requires_email, requires_link) from a free-text admin reply."""
+    t_norm = text.strip().lower()
+    if t_norm in ("2", "إيميل", "ايميل", "email", "yes", "نعم", "y"):
+        return 1, 0
+    if t_norm in ("3", "رابط", "لينك", "link"):
+        return 0, 1
+    return 0, 0
 
 
 def translate_to_english(text: str) -> str:
@@ -254,6 +273,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         variant_id = int(data.split(":")[2])
         context.user_data["awaiting"] = ("edit_variant_name", variant_id)
         await query.edit_message_text("أرسل الاسم الجديد للنسخة/المدة بالعربي:")
+
+    elif data.startswith("var:editrequires:"):
+        variant_id = int(data.split(":")[2])
+        context.user_data["awaiting"] = ("edit_variant_requires", variant_id)
+        await query.edit_message_text(REQUIRES_PROMPT)
 
     elif data.startswith("var:editdetails:"):
         variant_id = int(data.split(":")[2])
@@ -419,17 +443,19 @@ async def show_variant_admin(query, variant_id):
     v = db.get_variant(variant_id)
     s = db.get_service(v["service_id"])
     stock_label = "غير محدود" if v["stock"] < 0 else str(v["stock"])
+    requires_label = "إيميل 📧" if v["requires_email"] else ("رابط 🔗" if v["requires_link"] else "لا شيء")
     text = (
         f"📦 {s['name_ar']} — {v['name_ar']}\n{v['details_ar']}\n\n"
         f"💵 السعر: {v['price_egp']:.2f} EGP\n"
         f"📊 الكمية: {stock_label}\n"
-        f"📧 يتطلب إيميل: {'نعم' if v['requires_email'] else 'لا'}\n"
+        f"📥 مطلوب من العميل بعد الشراء: {requires_label}\n"
         f"👁️ الحالة: {'مخفي' if v['hidden'] else 'ظاهر'}"
     )
     rows = [
         [InlineKeyboardButton("✏️ تعديل الاسم", callback_data=f"var:editname:{variant_id}"),
          InlineKeyboardButton("✏️ تعديل الوصف", callback_data=f"var:editdetails:{variant_id}")],
         [InlineKeyboardButton("✏️ تعديل السعر", callback_data=f"var:editprice:{variant_id}")],
+        [InlineKeyboardButton("📥 تعديل المطلوب بعد الشراء", callback_data=f"var:editrequires:{variant_id}")],
         [InlineKeyboardButton("➕ زيادة مخزون", callback_data=f"var:stock:{variant_id}:5"),
          InlineKeyboardButton("➖ إنقاص مخزون", callback_data=f"var:stock:{variant_id}:-5")],
         [InlineKeyboardButton("👁️ إخفاء/إظهار", callback_data=f"var:hide:{variant_id}"),
@@ -742,19 +768,27 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("⚠️ من فضلك أرسل رقم صحيح للكمية.")
             return
-        context.user_data["awaiting"] = ("add_variant_email", svc_id, name_ar, details_ar, price, stock)
-        await update.message.reply_text("يتطلب إيميل؟ (نعم/لا)")
+        context.user_data["awaiting"] = ("add_variant_requires", svc_id, name_ar, details_ar, price, stock)
+        await update.message.reply_text(REQUIRES_PROMPT)
 
-    elif kind == "add_variant_email":
+    elif kind == "add_variant_requires":
         svc_id, name_ar, details_ar, price, stock = (
             awaiting[1], awaiting[2], awaiting[3], awaiting[4], awaiting[5]
         )
         context.user_data.pop("awaiting", None)
-        requires_email = 1 if text.strip() in ("نعم", "yes", "Yes", "y", "Y") else 0
+        requires_email, requires_link = parse_requires_choice(text)
         name_en = translate_to_english(name_ar)
         details_en = translate_to_english(details_ar)
-        db.add_variant(svc_id, name_ar, name_en, details_ar, details_en, price, stock, requires_email)
+        db.add_variant(svc_id, name_ar, name_en, details_ar, details_en, price, stock, requires_email, requires_link)
         await update.message.reply_text(f"✅ تم إضافة النسخة: {name_ar}")
+
+    elif kind == "edit_variant_requires":
+        variant_id = awaiting[1]
+        context.user_data.pop("awaiting", None)
+        requires_email, requires_link = parse_requires_choice(text)
+        db.update_variant_field(variant_id, "requires_email", requires_email)
+        db.update_variant_field(variant_id, "requires_link", requires_link)
+        await update.message.reply_text("✅ تم تحديث المطلوب من العميل بعد الشراء.")
 
     elif kind == "edit_variant_price":
         variant_id = awaiting[1]
