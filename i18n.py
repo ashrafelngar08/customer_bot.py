@@ -45,6 +45,13 @@ STRINGS = {
         "ar": "🔹 #{id} — {name}\n   📅 {date} | 💵 {price} | 📌 {status}",
         "en": "🔹 #{id} — {name}\n   📅 {date} | 💵 {price} | 📌 {status}",
     },
+    "order_button": {"ar": "#{id} — {name} {status_emoji}", "en": "#{id} — {name} {status_emoji}"},
+    "order_detail": {
+        "ar": "📦 طلب #{id}\n\n🛍 الخدمة: {name}\n💵 السعر: {price}\n📅 التاريخ: {date}\n📌 الحالة: {status}{extra}",
+        "en": "📦 Order #{id}\n\n🛍 Service: {name}\n💵 Price: {price}\n📅 Date: {date}\n📌 Status: {status}{extra}",
+    },
+    "order_email_line": {"ar": "\n📧 الإيميل: {email}", "en": "\n📧 Email: {email}"},
+    "order_link_line": {"ar": "\n🔗 الرابط: {link}", "en": "\n🔗 Link: {link}"},
     "status_pending": {"ar": "قيد الانتظار", "en": "Pending"},
     "status_in_progress": {"ar": "قيد التنفيذ", "en": "In Progress"},
     "status_delivered": {"ar": "تم التسليم ✅", "en": "Delivered ✅"},
@@ -127,4 +134,3 @@ def t(key: str, lang: str, **kwargs) -> str:
     lang = lang if lang in ("ar", "en") else "ar"
     text = STRINGS[key][lang]
     return text.format(**kwargs) if kwargs else text
-
