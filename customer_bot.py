@@ -157,9 +157,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             wallet = config.BINANCE_PAY_ID
             text = t("bp_instructions", lang, bid=wallet)
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-            t("copy_number", lang), copy_text=CopyTextButton(text=wallet),
+            f"📋 {wallet}", copy_text=CopyTextButton(text=wallet),
         )]])
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+        await context.bot.send_message(query.from_user.id, t("ask_topup_amount", lang))
 
     elif data.startswith("setlang:"):
         new_lang = data.split(":")[1]
