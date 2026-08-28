@@ -56,15 +56,20 @@ STRINGS = {
     "currency_saved": {"ar": "تم الحفظ ✅ الأسعار هتتعرض دلوقتي بالـ {cur}", "en": "Saved ✅ Prices will now show in {cur}"},
 
     "topup_title": {"ar": "💳 اختر طريقة إضافة الرصيد:", "en": "💳 Choose a top-up method:"},
+    "copy_number": {"ar": "📋 نسخ الرقم", "en": "📋 Copy number"},
     "vf_instructions": {
-        "ar": "حوّل المبلغ إلى المحفظة التالية:\n📱 `{number}`\n\nبعد التحويل، اكتب رسالة بالشكل التالي:\nرقم الهاتف اللي حولت منه، مسافة، ثم المبلغ\nمثال: `01012345678 100`",
-        "en": "Send the amount to this wallet:\n📱 `{number}`\n\nAfter sending, reply with:\nthe phone number you sent from, a space, then the amount\nExample: `01012345678 100`",
+        "ar": "حوّل المبلغ إلى المحفظة التالية (دوس الزرار تحت عشان تنسخ الرقم):\n📱 `{number}`",
+        "en": "Send the amount to this wallet (tap the button below to copy the number):\n📱 `{number}`",
     },
     "bp_instructions": {
-        "ar": "حوّل المبلغ إلى Binance ID التالي:\n🆔 `{bid}`\n\nبعد التحويل، اكتب رسالة بالشكل التالي:\nرقم الطلب (Order ID)، مسافة، ثم المبلغ\nمثال: `123456789 100`",
-        "en": "Send the amount to this Binance ID:\n🆔 `{bid}`\n\nAfter sending, reply with:\nyour Order ID, a space, then the amount\nExample: `123456789 100`",
+        "ar": "حوّل المبلغ إلى Binance ID التالي (دوس الزرار تحت عشان تنسخ الـ ID):\n🆔 `{bid}`",
+        "en": "Send the amount to this Binance ID (tap the button below to copy it):\n🆔 `{bid}`",
     },
-    "topup_bad_format": {"ar": "⚠️ الصيغة غلط. اكتب: القيمة الأولى مسافة ثم المبلغ (أرقام فقط).", "en": "⚠️ Wrong format. Send: first value, a space, then the amount (numbers only)."},
+    "ask_topup_amount": {"ar": "1️⃣ ابعت المبلغ اللي حولته (أرقام فقط):", "en": "1️⃣ Send the amount you sent (numbers only):"},
+    "invalid_amount": {"ar": "⚠️ من فضلك ابعت رقم صحيح للمبلغ.", "en": "⚠️ Please send a valid number for the amount."},
+    "ask_topup_reference_vf": {"ar": "2️⃣ ابعت رقم الهاتف اللي حولت منه:", "en": "2️⃣ Send the phone number you sent from:"},
+    "ask_topup_reference_bp": {"ar": "2️⃣ ابعت رقم الطلب (Order ID):", "en": "2️⃣ Send the Order ID:"},
+    "topup_bad_format": {"ar": "⚠️ الصيغة غلط، حاول تاني.", "en": "⚠️ Wrong format, try again."},
     "topup_submitted": {
         "ar": "✅ تم إرسال طلبك للإدارة، هيتم تأكيده يدويًا خلال وقت قصير وسيُضاف الرصيد تلقائيًا بعد التأكيد.",
         "en": "✅ Your request was sent to the admin team, it'll be confirmed shortly and your balance will be added automatically once approved.",
