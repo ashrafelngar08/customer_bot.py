@@ -28,6 +28,13 @@ STATUS_KEY = {
     "refunded": "status_refunded",
 }
 
+STATUS_EMOJI = {
+    "pending": "⏳",
+    "in_progress": "⏳",
+    "delivered": "✅",
+    "refunded": "🔁",
+}
+
 # ---------------- Persistent bottom menu (Reply Keyboard) ----------------
 # This is the always-visible menu under the message box, like a normal
 # storefront bot - not attached to any single message, unlike inline
@@ -140,6 +147,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("buy:"):
         variant_id = int(data.split(":")[1])
         await handle_buy(query, context, lang, user, variant_id)
+
+    elif data.startswith("order:"):
+        order_id = int(data.split(":")[1])
+        await show_order_detail(query, lang, user, order_id)
 
     elif data.startswith("setcur:"):
         cur = data.split(":")[1]
@@ -342,13 +353,39 @@ async def show_orders(target, lang, user):
     if not orders:
         await respond(target, t("no_orders", lang))
         return
-    lines = [t("orders_title", lang), ""]
+    rows = []
     for o in orders:
-        date = datetime.fromtimestamp(o["created_at"]).strftime("%Y-%m-%d")
-        price = format_price(o["price_egp"], user["currency"])
-        status = t(STATUS_KEY.get(o["status"], "status_pending"), lang)
-        lines.append(t("order_line", lang, id=o["id"], name=o["service_name_ar"], date=date, price=price, status=status))
-    await respond(target, "\n".join(lines))
+        emoji = STATUS_EMOJI.get(o["status"], "⏳")
+        label = t("order_button", lang, id=o["id"], name=o["service_name_ar"], status_emoji=emoji)
+        if len(label) > 60:
+            label = label[:57] + "..."
+        rows.append([InlineKeyboardButton(label, callback_data=f"order:{o['id']}")])
+    await respond(target, t("orders_title", lang), reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def show_order_detail(query, lang, user, order_id):
+    """Sends the full detail of a single order as its own message (a reply
+    into the chat), not an edit of the orders list - so tapping several
+    order buttons leaves a trail of detail messages, same as the X Pro
+    Store bot."""
+    order = db.get_order(order_id)
+    if not order or order["user_id"] != user["id"]:
+        await query.answer(t("no_orders", lang), show_alert=True)
+        return
+    date = datetime.fromtimestamp(order["created_at"]).strftime("%Y-%m-%d")
+    price = format_price(order["price_egp"], user["currency"])
+    status = t(STATUS_KEY.get(order["status"], "status_pending"), lang)
+    extra = ""
+    if order.get("email"):
+        extra += t("order_email_line", lang, email=order["email"])
+    if order.get("link"):
+        extra += t("order_link_line", lang, link=order["link"])
+    text = t(
+        "order_detail", lang,
+        id=order["id"], name=order["service_name_ar"], price=price,
+        date=date, status=status, extra=extra,
+    )
+    await query.message.reply_text(text)
 
 
 async def show_profile(target, lang, user):
