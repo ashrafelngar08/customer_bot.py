@@ -262,20 +262,25 @@ async def handle_buy(query, context, lang, user, variant_id):
         await query.edit_message_text(t("ask_email", lang), reply_markup=back_kb(lang, f"var:{variant_id}"))
         return
 
+    if v["requires_link"]:
+        context.user_data["awaiting"] = ("link", variant_id)
+        await query.edit_message_text(t("ask_link", lang), reply_markup=back_kb(lang, f"var:{variant_id}"))
+        return
+
     await finalize_order(query, context, lang, user, v, email=None)
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-async def finalize_order(target, context, lang, user, variant, email=None):
+async def finalize_order(target, context, lang, user, variant, email=None, link=None):
     """target can be a CallbackQuery or an Update.message-like object.
     variant is a row from the variants table (what's actually purchased)."""
     service = db.get_service(variant["service_id"])
     db.adjust_balance(user["id"], -variant["price_egp"])
     db.adjust_variant_stock(variant["id"], -1)
     full_name_ar = f"{service['name_ar']} — {variant['name_ar']}"
-    order_id = db.create_order(user["id"], service["id"], variant["id"], full_name_ar, variant["price_egp"], email)
+    order_id = db.create_order(user["id"], service["id"], variant["id"], full_name_ar, variant["price_egp"], email, link)
 
     # Pay referral bonus if this is the referred user's first order
     if db.maybe_pay_referral_bonus(user["id"], config.REFERRAL_BONUS_EGP):
@@ -298,10 +303,10 @@ async def finalize_order(target, context, lang, user, variant, email=None):
     await respond(target, text)
 
     # Notify admin bot so it can be delivered / actioned
-    await notify_admin_new_order(context, fresh_user, service, variant, order_id, email)
+    await notify_admin_new_order(context, fresh_user, service, variant, order_id, email, link)
 
 
-async def notify_admin_new_order(context, user, service, variant, order_id, email):
+async def notify_admin_new_order(context, user, service, variant, order_id, email, link=None):
     from telegram import Bot
     admin_bot = Bot(token=config.ADMIN_BOT_TOKEN)
     lines = [
@@ -312,6 +317,8 @@ async def notify_admin_new_order(context, user, service, variant, order_id, emai
     ]
     if email:
         lines.append(f"📧 الإيميل: {email}")
+    if link:
+        lines.append(f"🔗 الرابط: {link}")
     text = "\n".join(lines)
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ تم التسليم", callback_data=f"admin_deliver:{order_id}"),
@@ -390,6 +397,20 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             context.user_data.pop("awaiting", None)
             await finalize_order(update.message, context, lang, user, variant, email=email)
+            return
+
+        elif kind == "link":
+            variant_id = awaiting[1]
+            link = text_in
+            if len(link) < 4 or " " in link:
+                await update.message.reply_text(t("invalid_link", lang))
+                return
+            variant = db.get_variant(variant_id)
+            if not variant:
+                context.user_data.pop("awaiting", None)
+                return
+            context.user_data.pop("awaiting", None)
+            await finalize_order(update.message, context, lang, user, variant, link=link)
             return
 
         elif kind == "topup":
