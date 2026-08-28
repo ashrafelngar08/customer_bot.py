@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS categories (
     name_ar TEXT NOT NULL,
     name_en TEXT NOT NULL,
     emoji TEXT NOT NULL DEFAULT '',
+    icon_custom_emoji_id TEXT,
     sort_order INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0
 );
@@ -60,7 +61,8 @@ CREATE TABLE IF NOT EXISTS services (
     stock INTEGER NOT NULL DEFAULT -1,
     requires_email INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
-    sort_order INTEGER NOT NULL DEFAULT 0
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    icon_custom_emoji_id TEXT
 );
 
 -- A "service" above is now a *product* (e.g. "جيميناي برو"). Each product
@@ -163,6 +165,10 @@ def init_db():
         conn.execute(SCHEMA)
         # Migration for DBs created before the variants table existed.
         conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS variant_id INTEGER REFERENCES variants(id)")
+        # Migration for DBs created before button icons (Telegram custom-emoji
+        # icons on buttons, Bot API 9.4+) were supported.
+        conn.execute("ALTER TABLE categories ADD COLUMN IF NOT EXISTS icon_custom_emoji_id TEXT")
+        conn.execute("ALTER TABLE services ADD COLUMN IF NOT EXISTS icon_custom_emoji_id TEXT")
         # Seed starter categories/services only on first run
         row = conn.execute("SELECT COUNT(*) c FROM categories").fetchone()
         if row["c"] == 0:
@@ -305,13 +311,22 @@ def get_category(cat_id: int):
         return dict(row) if row else None
 
 
-def add_category(name_ar, name_en, emoji=""):
+def add_category(name_ar, name_en, emoji="", icon_custom_emoji_id=None):
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO categories (name_ar, name_en, emoji, sort_order) VALUES (?,?,?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories)) RETURNING id",
-            (name_ar, name_en, emoji),
+            """INSERT INTO categories (name_ar, name_en, emoji, icon_custom_emoji_id, sort_order)
+               VALUES (?,?,?,?, (SELECT COALESCE(MAX(sort_order),0)+1 FROM categories)) RETURNING id""",
+            (name_ar, name_en, emoji, icon_custom_emoji_id),
         )
         return cur.lastrowid
+
+
+def update_category_field(cat_id: int, field: str, value):
+    allowed = {"name_ar", "name_en", "emoji", "icon_custom_emoji_id"}
+    if field not in allowed:
+        raise ValueError("field not allowed")
+    with get_conn() as conn:
+        conn.execute(f"UPDATE categories SET {field}=? WHERE id=?", (value, cat_id))
 
 
 def delete_category(cat_id: int):
@@ -340,16 +355,17 @@ def get_service(service_id: int):
         return dict(row) if row else None
 
 
-def add_service(category_id, name_ar, name_en, details_ar="", details_en="", price_egp=0, stock=-1, requires_email=0):
+def add_service(category_id, name_ar, name_en, details_ar="", details_en="", price_egp=0, stock=-1,
+                 requires_email=0, icon_custom_emoji_id=None):
     """Adds a *product*. Price/stock/email fields are accepted for backward
     compatibility but purchasing now happens through the product's variants
     (see add_variant) - a product needs at least one variant to be buyable."""
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO services
-               (category_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email)
-               VALUES (?,?,?,?,?,?,?,?) RETURNING id""",
-            (category_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email),
+               (category_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email, icon_custom_emoji_id)
+               VALUES (?,?,?,?,?,?,?,?,?) RETURNING id""",
+            (category_id, name_ar, name_en, details_ar, details_en, price_egp, stock, requires_email, icon_custom_emoji_id),
         )
         return cur.lastrowid
 
@@ -361,7 +377,8 @@ def delete_service(service_id: int):
 
 
 def update_service_field(service_id: int, field: str, value):
-    allowed = {"name_ar", "name_en", "details_ar", "details_en", "price_egp", "stock", "requires_email", "hidden"}
+    allowed = {"name_ar", "name_en", "details_ar", "details_en", "price_egp", "stock", "requires_email", "hidden",
+               "icon_custom_emoji_id"}
     if field not in allowed:
         raise ValueError("field not allowed")
     with get_conn() as conn:
@@ -559,4 +576,3 @@ def list_admins():
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM admins ORDER BY added_at").fetchall()
         return [dict(r) for r in rows]
-
