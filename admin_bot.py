@@ -16,14 +16,62 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("admin_bot")
 
 
+# ---------------- Roles & permissions ----------------
+# config.ADMIN_ID (the owner) always has every permission and is never
+# stored in the DB. Anyone else must be added via db.add_admin() and gets
+# only the callback/text-input prefixes listed for their role below.
+ROLE_OWNER = "owner"
+ROLE_SERVICES = "services"
+
+# Prefixes of callback_data (on_callback) and "awaiting" kinds (on_text)
+# each non-owner role is allowed to touch. "main" is always allowed so
+# everyone can navigate back to their own menu.
+ROLE_PERMISSIONS = {
+    ROLE_SERVICES: {
+        "callback_prefixes": ("main", "cats:", "svc:", "var:"),
+        "awaiting_kinds": {
+            "add_category", "add_service_name", "edit_service_name",
+            "add_variant_name", "add_variant_details", "add_variant_price",
+            "add_variant_stock", "add_variant_email", "edit_variant_price",
+            "edit_variant_name", "edit_variant_details",
+        },
+    },
+}
+
+
+def get_role(telegram_id: int) -> str | None:
+    """Returns the caller's role, or None if they're not an admin at all."""
+    if telegram_id == config.ADMIN_ID:
+        return ROLE_OWNER
+    rec = db.get_admin(telegram_id)
+    return rec["role"] if rec else None
+
+
 def only_admin(func):
+    """Allows anyone with a role (owner or any sub-admin role) through.
+    Fine-grained restriction of *what* a sub-admin can do happens in
+    on_callback/on_text via require_permission below."""
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id != config.ADMIN_ID:
+        role = get_role(update.effective_user.id)
+        if role is None:
             if update.message:
                 await update.message.reply_text("🚫 Not authorized.")
             return
+        context.user_data["role"] = role
         return await func(update, context)
     return wrapper
+
+
+def require_permission(role: str, kind: str, value: str) -> bool:
+    """kind is 'callback' or 'awaiting'. Owner can always do everything."""
+    if role == ROLE_OWNER:
+        return True
+    perms = ROLE_PERMISSIONS.get(role)
+    if not perms:
+        return False
+    if kind == "callback":
+        return value == "main" or any(value.startswith(p) for p in perms["callback_prefixes"] if p != "main")
+    return value in perms["awaiting_kinds"]
 
 
 def translate_to_english(text: str) -> str:
@@ -35,13 +83,19 @@ def translate_to_english(text: str) -> str:
         return text
 
 
-def main_kb():
+def main_kb(role: str = ROLE_OWNER):
+    if role == ROLE_SERVICES:
+        # Sub-admins with the "services" role only get the catalog screen -
+        # no messaging, no customer data, no orders/top-ups, no admin mgmt.
+        return InlineKeyboardMarkup([[InlineKeyboardButton("🗂️ إدارة الأصناف", callback_data="cats:root")]])
+
     rows = [
         [InlineKeyboardButton("📨 رسالة فردية", callback_data="msg:one"),
          InlineKeyboardButton("📢 رسالة جماعية", callback_data="msg:all")],
         [InlineKeyboardButton("🗂️ إدارة الأصناف", callback_data="cats:root")],
         [InlineKeyboardButton("👥 إدارة العملاء", callback_data="users:list:0")],
         [InlineKeyboardButton("📦 كل الطلبات المعلقة", callback_data="orders:pending")],
+        [InlineKeyboardButton("👤 إدارة المشرفين", callback_data="admins:root")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -49,7 +103,9 @@ def main_kb():
 @only_admin
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.init_db()
-    await update.message.reply_text("🛠️ لوحة تحكم الإدارة", reply_markup=main_kb())
+    role = context.user_data.get("role", ROLE_OWNER)
+    title = "🛠️ لوحة تحكم الإدارة" if role == ROLE_OWNER else "🗂️ لوحة تحكم الخدمات"
+    await update.message.reply_text(title, reply_markup=main_kb(role))
 
 
 # ---------------- Broadcast / direct message ----------------
@@ -58,10 +114,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
+    role = context.user_data.get("role") or get_role(update.effective_user.id)
+
+    if not require_permission(role, "callback", data):
+        await query.answer("🚫 مفيش صلاحية لده.", show_alert=True)
+        return
     await query.answer()
 
     if data == "main":
-        await query.edit_message_text("🛠️ لوحة تحكم الإدارة", reply_markup=main_kb())
+        title = "🛠️ لوحة تحكم الإدارة" if role == ROLE_OWNER else "🗂️ لوحة تحكم الخدمات"
+        await query.edit_message_text(title, reply_markup=main_kb(role))
 
     elif data == "msg:one":
         context.user_data["awaiting"] = ("msg_one_id",)
@@ -217,6 +279,36 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ تم رفض طلب الشحن #{topup_id}.")
         else:
             await query.edit_message_text("⚠️ الطلب غير موجود أو تم التعامل معه من قبل.")
+
+    elif data == "admins:root":
+        await show_admins_list(query)
+
+    elif data == "admins:add":
+        context.user_data["awaiting"] = ("add_subadmin_id",)
+        await query.edit_message_text(
+            "أرسل Telegram ID الخاص بالمشرف الجديد.\n"
+            "(المشرف لازم يكون بدأ محادثة مع البوت قبل كده، أو خليه يبعتلك أي رسالة للبوت الأول عشان تعرف الـ ID بتاعه.)"
+        )
+
+    elif data.startswith("admins:remove:"):
+        target_id = int(data.split(":")[2])
+        db.remove_admin(target_id)
+        await query.edit_message_text("✅ تم حذف المشرف.")
+        await show_admins_list(query)
+
+
+async def show_admins_list(query):
+    admins = db.list_admins()
+    rows = []
+    role_labels = {ROLE_SERVICES: "إدارة الخدمات"}
+    for a in admins:
+        label = f"{a['telegram_id']}" + (f" (@{a['username']})" if a["username"] else "")
+        label += f" — {role_labels.get(a['role'], a['role'])}"
+        rows.append([InlineKeyboardButton(f"❌ {label}", callback_data=f"admins:remove:{a['telegram_id']}")])
+    rows.append([InlineKeyboardButton("➕ إضافة مشرف جديد", callback_data="admins:add")])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main")])
+    text = "👤 المشرفون الحاليون:" if admins else "👤 مفيش مشرفين إضافيين لسه.\nأنت (الأونر) عندك كل الصلاحيات دايمًا."
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def show_categories_admin(query):
@@ -408,6 +500,16 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kind = awaiting[0]
     text = update.message.text.strip()
 
+    role = context.user_data.get("role") or get_role(update.effective_user.id)
+    if kind != "add_subadmin_id" and not require_permission(role, "awaiting", kind):
+        context.user_data.pop("awaiting", None)
+        await update.message.reply_text("🚫 مفيش صلاحية لده.")
+        return
+    if kind == "add_subadmin_id" and role != ROLE_OWNER:
+        context.user_data.pop("awaiting", None)
+        await update.message.reply_text("🚫 مفيش صلاحية لده.")
+        return
+
     NAME_KINDS = {"add_category", "add_service_name", "edit_service_name", "add_variant_name", "edit_variant_name"}
     is_forwarded = update.message.forward_origin is not None
     if kind in NAME_KINDS and not is_forwarded and any(
@@ -420,7 +522,30 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if kind == "msg_one_id":
+    if kind == "add_subadmin_id":
+        context.user_data.pop("awaiting", None)
+        try:
+            new_admin_id = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ من فضلك أرسل رقم Telegram ID صحيح.")
+            return
+        if new_admin_id == config.ADMIN_ID:
+            await update.message.reply_text("⚠️ ده الآي دي بتاعك أنت، وأنت أونر أصلاً بكل الصلاحيات.")
+            return
+        db.add_admin(new_admin_id, role=ROLE_SERVICES, added_by=update.effective_user.id)
+        await update.message.reply_text(
+            f"✅ تم إضافة {new_admin_id} كمشرف بصلاحية (إدارة الخدمات فقط: إضافة/تعديل/حذف الأصناف والمنتجات والنسخ).\n"
+            "المشرف الجديد يقدر يفتح البوت بـ /start دلوقتي."
+        )
+        try:
+            await context.bot.send_message(
+                new_admin_id,
+                "🎉 تم إضافتك كمشرف في بوت الإدارة بصلاحية (إدارة الخدمات).\nابعت /start عشان تبدأ."
+            )
+        except TelegramError:
+            pass
+
+    elif kind == "msg_one_id":
         context.user_data["awaiting"] = ("msg_one_text", int(text))
         await update.message.reply_text("أرسل نص الرسالة:")
 
