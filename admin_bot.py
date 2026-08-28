@@ -409,10 +409,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     NAME_KINDS = {"add_category", "add_service_name", "edit_service_name", "add_variant_name", "edit_variant_name"}
-    if kind in NAME_KINDS and any(e.type == "custom_emoji" for e in (update.message.entities or [])):
+    is_forwarded = update.message.forward_origin is not None
+    if kind in NAME_KINDS and not is_forwarded and any(
+        e.type == "custom_emoji" for e in (update.message.entities or [])
+    ):
         await update.message.reply_text(
-            "⚠️ الإيموجي ده إيموجي مميز (بريميوم) من تليجرام - مش شكل نصي حقيقي، لذلك بيتحفظ بشكل مختلف عن اللي شايفه، "
-            "وأصلاً أزرار القوائم مش بتعرضه صح. ابعت الاسم تاني باستخدام إيموجي عادي من لوحة الإيموجي الأساسية."
+            "⚠️ الإيموجي ده إيموجي مميز (بريميوم) من تليجرام - لو كتبته/لصقته مباشرة بيتحفظ بشكل مختلف عن اللي شايفه. "
+            "الحل: افتح أي رسالة فيها نفس الإيموجي واعمل تحويل (Forward) للرسالة دي للبوت بدل ما تكتبه بنفسك، "
+            "وهيتحفظ صح. أو ابعت اسم بإيموجي عادي من لوحة الإيموجي الأساسية."
         )
         return
 
@@ -577,3 +581,4 @@ if __name__ == "__main__":
     application = build_app()
     log.info("Admin bot starting...")
     application.run_polling()
+
