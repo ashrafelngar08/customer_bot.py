@@ -48,7 +48,33 @@ the invitee's first order, support contact.
 this was the non-negotiable part of the spec), top-up approve/reject with
 automatic balance crediting, customer list with ban/unban and manual balance
 adjustment, stock +/- controls, one-tap order delivery confirmation and
-cancel-with-refund from the same notification message.
+cancel-with-refund from the same notification message, and sub-admins with
+scoped permissions (see below).
+
+### Sub-admins (limited-permission admins)
+
+Only you (the `ADMIN_ID` in `.env`) are the **owner** — you always have full
+access and don't need to be added anywhere. From the main menu, tap **👤
+إدارة المشرفين** to add another Telegram account as a sub-admin.
+
+Right now sub-admins get a single role, **"إدارة الخدمات" (services)**:
+they can open the bot with `/start` and get a stripped-down menu with only
+**🗂️ إدارة الأصناف**, where they can add/edit/hide/delete categories,
+products, and variants (name, price, stock, details) — but they can't
+message customers, see the customer list, adjust balances, touch
+orders/top-ups, or manage other admins. That's enforced in `admin_bot.py`
+(see `ROLE_PERMISSIONS`), not just hidden in the UI — a sub-admin who
+somehow sends a `users:` or `admins:` callback gets rejected server-side.
+
+To remove a sub-admin, open **👤 إدارة المشرفين** and tap the ❌ next to
+their entry. Sub-admins are stored in the `admins` table in `shop.db`
+(telegram_id, role, who added them, when) — nothing to configure in `.env`.
+
+Need a different permission mix later (e.g. an admin who can approve
+top-ups but not touch pricing)? Add a new role key to `ROLE_PERMISSIONS` in
+`admin_bot.py` with its own allowed callback/text prefixes, and offer it as
+a choice when adding the sub-admin — the plumbing (DB table, decorator,
+menu-by-role) is already there to support more than one role.
 
 ## Data safety
 
