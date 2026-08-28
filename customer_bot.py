@@ -4,7 +4,7 @@ from datetime import datetime
 
 from telegram import (
     Update, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton, CopyTextButton,
 )
 from telegram.ext import (
     ApplicationBuilder, ContextTypes, CommandHandler,
@@ -149,12 +149,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("topup:"):
         method = data.split(":")[1]
-        context.user_data["awaiting"] = ("topup", method)
+        context.user_data["awaiting"] = ("topup_amount", method)
         if method == "vf":
-            text = t("vf_instructions", lang, number=config.VODAFONE_CASH_NUMBER)
+            wallet = config.VODAFONE_CASH_NUMBER
+            text = t("vf_instructions", lang, number=wallet)
         else:
-            text = t("bp_instructions", lang, bid=config.BINANCE_PAY_ID)
-        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+            wallet = config.BINANCE_PAY_ID
+            text = t("bp_instructions", lang, bid=wallet)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            t("copy_number", lang), copy_text=CopyTextButton(text=wallet),
+        )]])
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
     elif data.startswith("setlang:"):
         new_lang = data.split(":")[1]
@@ -369,9 +374,6 @@ async def show_referral(target, context, lang, user):
     await respond(target, text, disable_web_page_preview=True)
 
 
-TOPUP_RE = re.compile(r"^\s*(\S+)\s+([0-9]+(?:\.[0-9]+)?)\s*$")
-
-
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_user = update.effective_user
     user = db.get_or_create_user(tg_user.id, tg_user.username)
@@ -413,14 +415,26 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await finalize_order(update.message, context, lang, user, variant, link=link)
             return
 
-        elif kind == "topup":
+        elif kind == "topup_amount":
             method = awaiting[1]
-            m = TOPUP_RE.match(text_in)
-            if not m:
+            try:
+                amount = float(text_in.strip())
+                if amount <= 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text(t("invalid_amount", lang))
+                return
+            context.user_data["awaiting"] = ("topup_reference", method, amount)
+            ref_prompt = "ask_topup_reference_vf" if method == "vf" else "ask_topup_reference_bp"
+            await update.message.reply_text(t(ref_prompt, lang))
+            return
+
+        elif kind == "topup_reference":
+            method, amount = awaiting[1], awaiting[2]
+            reference = text_in.strip()
+            if not reference:
                 await update.message.reply_text(t("topup_bad_format", lang))
                 return
-            reference, amount_str = m.group(1), m.group(2)
-            amount = float(amount_str)
             context.user_data.pop("awaiting", None)
             topup_id = db.create_topup(user["id"], method, amount, reference)
             await update.message.reply_text(t("topup_submitted", lang))
