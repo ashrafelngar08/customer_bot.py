@@ -104,6 +104,19 @@ CREATE TABLE IF NOT EXISTS topups (
     created_at BIGINT NOT NULL,
     resolved_at BIGINT
 );
+
+-- Sub-admins added by the main admin (config.ADMIN_ID, who is always the
+-- implicit 'owner' and is never stored here). Each row is an extra person
+-- allowed into the admin bot, scoped to a role/permission set that the bot
+-- code enforces (see ROLE_PERMISSIONS in admin_bot.py).
+CREATE TABLE IF NOT EXISTS admins (
+    id SERIAL PRIMARY KEY,
+    telegram_id BIGINT UNIQUE NOT NULL,
+    username TEXT,
+    role TEXT NOT NULL DEFAULT 'services',
+    added_by BIGINT,
+    added_at BIGINT NOT NULL
+);
 """
 
 
@@ -511,3 +524,39 @@ def maybe_pay_referral_bonus(referred_user_id: int, bonus_egp: float):
         )
         conn.execute("UPDATE users SET referral_bonus_paid=1 WHERE id=?", (referred_user_id,))
         return True
+
+
+# ---------------- Sub-admins ----------------
+
+def add_admin(telegram_id: int, role: str, added_by: int, username: str | None = None):
+    """Add a sub-admin, or update their role/username if they already exist."""
+    with get_conn() as conn:
+        existing = conn.execute("SELECT id FROM admins WHERE telegram_id=?", (telegram_id,)).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE admins SET role=?, username=? WHERE telegram_id=?",
+                (role, username, telegram_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO admins (telegram_id, username, role, added_by, added_at) VALUES (?,?,?,?,?)",
+                (telegram_id, username, role, added_by, int(time.time())),
+            )
+
+
+def remove_admin(telegram_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM admins WHERE telegram_id=?", (telegram_id,))
+
+
+def get_admin(telegram_id: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM admins WHERE telegram_id=?", (telegram_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_admins():
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM admins ORDER BY added_at").fetchall()
+        return [dict(r) for r in rows]
+
