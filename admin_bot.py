@@ -11,6 +11,7 @@ from deep_translator import GoogleTranslator
 
 import config
 import db
+import xprostore_api
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("admin_bot")
@@ -136,6 +137,7 @@ def main_kb(role: str = ROLE_OWNER):
         [InlineKeyboardButton("👥 إدارة العملاء", callback_data="users:list:0")],
         [InlineKeyboardButton("📦 كل الطلبات المعلقة", callback_data="orders:pending")],
         [InlineKeyboardButton("👤 إدارة المشرفين", callback_data="admins:root")],
+        [InlineKeyboardButton("💰 رصيد xprostore.store", callback_data="xprostore:wallet")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -289,6 +291,35 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.adjust_variant_stock(int(variant_id), int(delta))
         await show_variant_admin(query, int(variant_id))
 
+    elif data.startswith("var:linkapi:"):
+        if role != ROLE_OWNER:
+            await query.answer("🚫 ربط API متاح لصاحب البوت بس.", show_alert=True)
+            return
+        variant_id = int(data.split(":")[2])
+        context.user_data["awaiting"] = ("link_variant_api", variant_id)
+        await query.edit_message_text(
+            "أرسل رقم الـ ID بتاع الخدمة في xprostore.store عشان تربطها بالنسخة دي "
+            "(الطلبات هتتنفذ تلقائيًا وهيتحدث المخزون لوحده).\n\n"
+            "معرفش الـ ID؟ ابعت جزء من اسم الخدمة (زي: جيميناي) وهجيبلك أقرب الخدمات في القائمة.\n\n"
+            "ابعت \"الغاء\" عشان تفك الربط وترجعها يدوية."
+        )
+
+    elif data.startswith("var:unlinkapi:"):
+        if role != ROLE_OWNER:
+            await query.answer("🚫 ربط API متاح لصاحب البوت بس.", show_alert=True)
+            return
+        variant_id = int(data.split(":")[2])
+        db.update_variant_field(variant_id, "api_service_id", None)
+        await show_variant_admin(query, variant_id)
+
+    elif data == "xprostore:wallet":
+        try:
+            wallet = xprostore_api.get_wallet()
+            balance = wallet.get("balance", wallet.get("amount", "؟"))
+            await query.answer(f"💰 رصيدك في xprostore.store: {balance}", show_alert=True)
+        except xprostore_api.XProStoreError as e:
+            await query.answer(f"⚠️ تعذر جلب الرصيد: {e}", show_alert=True)
+
     elif data.startswith("users:list:"):
         offset = int(data.split(":")[2])
         await show_users_list(query, offset)
@@ -434,6 +465,8 @@ async def show_product_admin(query, service_id):
     rows = []
     for v in variants:
         label = f"{v['name_ar']} — {v['price_egp']:.0f} EGP"
+        if v.get("api_service_id"):
+            label = "🤖 " + label
         if v["hidden"]:
             label += " (مخفي)"
         rows.append([InlineKeyboardButton(label, callback_data=f"var:view:{v['id']}")])
@@ -456,12 +489,15 @@ async def show_variant_admin(query, variant_id):
     s = db.get_service(v["service_id"])
     stock_label = "غير محدود" if v["stock"] < 0 else str(v["stock"])
     requires_label = "إيميل 📧" if v["requires_email"] else ("رابط 🔗" if v["requires_link"] else "لا شيء")
+    api_label = f"🤖 مربوطة بـ API (ID: {v['api_service_id']}) - تلقائي بالكامل" if v.get("api_service_id") \
+        else "🖐️ يدوية (مش مربوطة بـ API)"
     text = (
         f"📦 {s['name_ar']} — {v['name_ar']}\n{v['details_ar']}\n\n"
         f"💵 السعر: {v['price_egp']:.2f} EGP\n"
         f"📊 الكمية: {stock_label}\n"
         f"📥 مطلوب من العميل بعد الشراء: {requires_label}\n"
-        f"👁️ الحالة: {'مخفي' if v['hidden'] else 'ظاهر'}"
+        f"👁️ الحالة: {'مخفي' if v['hidden'] else 'ظاهر'}\n"
+        f"🔗 التنفيذ: {api_label}"
     )
     rows = [
         [InlineKeyboardButton("✏️ تعديل الاسم", callback_data=f"var:editname:{variant_id}"),
@@ -472,6 +508,9 @@ async def show_variant_admin(query, variant_id):
          InlineKeyboardButton("➖ إنقاص مخزون", callback_data=f"var:stock:{variant_id}:-5")],
         [InlineKeyboardButton("👁️ إخفاء/إظهار", callback_data=f"var:hide:{variant_id}"),
          InlineKeyboardButton("🗑️ حذف", callback_data=f"var:delete:{variant_id}")],
+        ([InlineKeyboardButton("🔌 فك الربط بـ API", callback_data=f"var:unlinkapi:{variant_id}")]
+         if v.get("api_service_id") else
+         [InlineKeyboardButton("🔗 ربط API", callback_data=f"var:linkapi:{variant_id}")]),
         [InlineKeyboardButton("🔙 رجوع", callback_data=f"svc:view:{v['service_id']}")],
     ]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
@@ -553,6 +592,10 @@ async def show_order_admin(query, order_id):
         lines.append(f"📧 الإيميل: {o['email']}")
     if o.get("link"):
         lines.append(f"🔗 الرابط: {o['link']}")
+    if o.get("api_order_id"):
+        lines.append(f"🤖 طلب API: #{o['api_order_id']} (الحالة عند xprostore: {o.get('api_status') or '؟'})")
+    if o.get("note"):
+        lines.append(f"📝 ملاحظة: {o['note']}")
     rows = []
     if o["status"] == "in_progress":
         rows.append([
@@ -879,6 +922,43 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         db.update_variant_field(variant_id, "price_egp", price)
         await update.message.reply_text(f"✅ تم تحديث السعر إلى {price:.2f} EGP")
+
+    elif kind == "link_variant_api":
+        variant_id = awaiting[1]
+        if role != ROLE_OWNER:
+            context.user_data.pop("awaiting", None)
+            await update.message.reply_text("🚫 ربط API متاح لصاحب البوت بس.")
+            return
+        if text in ("الغاء", "إلغاء", "cancel"):
+            context.user_data.pop("awaiting", None)
+            db.update_variant_field(variant_id, "api_service_id", None)
+            await update.message.reply_text("✅ تم فك الربط، النسخة رجعت يدوية.")
+            return
+        if text.isdigit():
+            context.user_data.pop("awaiting", None)
+            db.update_variant_field(variant_id, "api_service_id", text)
+            await update.message.reply_text(
+                f"✅ تم ربط النسخة بخدمة API رقم {text}. الطلبات هتتنفذ تلقائيًا والكمية هتتحدث لوحدها."
+            )
+            return
+        # Not a number and not "الغاء" -> treat as a name search to help find the ID.
+        try:
+            services = xprostore_api.list_services()
+        except xprostore_api.XProStoreError as e:
+            await update.message.reply_text(f"⚠️ تعذر البحث في قائمة API: {e}\nابعت رقم الـ ID مباشرة لو عارفه.")
+            return
+        needle = text.strip().lower()
+        matches = [s for s in services if needle in str(s.get("name", "")).lower()][:8]
+        if not matches:
+            await update.message.reply_text("مفيش نتائج بالاسم ده. ابعت رقم الـ ID مباشرة، أو جرب كلمة تانية.")
+            return
+        lines = ["أقرب نتائج لقيتها:"]
+        for s in matches:
+            sid = s.get("id") or s.get("service_id")
+            lines.append(f"• ID {sid} — {s.get('name', '؟')} — {s.get('price', '؟')}")
+        lines.append("\nابعتلي رقم الـ ID اللي تحب تربطها بيه، أو \"الغاء\" لو غيرت رأيك.")
+        await update.message.reply_text("\n".join(lines))
+        # stays in the same awaiting state so the admin's next message (the ID) is handled above
 
     elif kind == "edit_service_name":
         svc_id = awaiting[1]
