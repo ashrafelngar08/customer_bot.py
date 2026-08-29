@@ -306,8 +306,9 @@ async def finalize_order(target, context, lang, user, variant, email=None, link=
     # manual, exactly like before - an admin actions it from the new-order
     # notification below.
     api_service_id = variant.get("api_service_id")
+    delivered_content = None
     if api_service_id:
-        ok, error_text, api_resp = await dispatch_order_to_api(order_id, variant, email, link)
+        ok, error_text, delivered_content = await dispatch_order_to_api(order_id, variant, email, link)
         if not ok:
             # Never keep a customer's money for an order that didn't actually
             # go through - refund immediately and say so plainly, don't show
@@ -342,11 +343,32 @@ async def finalize_order(target, context, lang, user, variant, email=None, link=
     full_name = f"{service['name_ar'] if lang == 'ar' else service['name_en']} — {variant['name_ar'] if lang == 'ar' else variant['name_en']}"
     fresh_user = db.get_user_by_id(user["id"])
     price = format_price(variant["price_egp"], fresh_user["currency"])
-    text = t("order_placed", lang, name=full_name, price=price, order_id=order_id)
+
+    if delivered_content:
+        # xprostore.store already handed over the goods - mark it delivered
+        # right now and send the actual content, instead of the generic
+        # "being processed" message.
+        db.set_order_status(order_id, "delivered")
+        text = (
+            f"✅ تم تنفيذ طلبك فورًا!\n"
+            f"الخدمة: {full_name}\n"
+            f"السعر: {price}\n"
+            f"رقم الطلب: #{order_id}\n\n"
+            f"📦 التفاصيل:\n{delivered_content}"
+            if lang == "ar" else
+            f"✅ Your order was fulfilled instantly!\n"
+            f"Service: {full_name}\n"
+            f"Price: {price}\n"
+            f"Order #{order_id}\n\n"
+            f"📦 Details:\n{delivered_content}"
+        )
+    else:
+        text = t("order_placed", lang, name=full_name, price=price, order_id=order_id)
     await respond(target, text)
 
     # Notify admin bot so it can be delivered / actioned
-    await notify_admin_new_order(context, fresh_user, service, variant, order_id, email, link)
+    await notify_admin_new_order(context, fresh_user, service, variant, order_id, email, link,
+                                  delivered_instantly=bool(delivered_content))
 
 
 def _has_key(key):
@@ -359,7 +381,12 @@ def _has_key(key):
 
 async def dispatch_order_to_api(order_id, variant, email=None, link=None):
     """Places the order at xprostore.store for a variant linked via
-    api_service_id. Returns (ok, error_text, raw_response).
+    api_service_id. Returns (ok, error_text, delivered_content).
+
+    delivered_content is the actual account/code to hand the customer right
+    now, or None if xprostore.store hasn't produced it yet (a slower
+    service) - in that case api_sync.py's background polling delivers it
+    the moment it's ready.
 
     idempotency_key is derived from our own order_id and never regenerated,
     so if this ever runs twice for the same order (e.g. a retry after a
@@ -384,19 +411,55 @@ async def dispatch_order_to_api(order_id, variant, email=None, link=None):
         return False, str(e), None
 
     api_order_id = str(resp.get("id") or resp.get("order_id") or resp.get("data", {}).get("id") or "")
-    api_status = resp.get("status") or "submitted"
+    api_status = str(resp.get("status") or "submitted")
     db.set_order_api_info(order_id, api_order_id=api_order_id or None, api_status=api_status,
                            idempotency_key=idempotency_key)
-    return True, None, resp
+
+    # Most stock-account services (ready-made accounts, activation links) are
+    # actually instant - the create-order response often already carries the
+    # goods. Check that first.
+    delivered = xprostore_api.extract_delivered_content(resp)
+    if delivered:
+        return True, None, delivered
+
+    # Not in the create response and not already a final status - give it a
+    # few short checks (a couple of seconds apart) in case xprostore.store
+    # just needs a moment to attach it, so the customer still gets it
+    # instantly instead of waiting for the next background sync cycle.
+    if api_order_id and api_status.lower() not in ("completed", "delivered", "done",
+                                                    "failed", "cancelled", "canceled", "rejected"):
+        for _ in range(3):
+            await asyncio.sleep(2)
+            try:
+                check = await asyncio.to_thread(xprostore_api.get_order, api_order_id)
+            except xprostore_api.XProStoreError:
+                break
+            delivered = xprostore_api.extract_delivered_content(check)
+            new_status = str(check.get("status") or api_status)
+            if new_status != api_status:
+                db.set_order_api_info(order_id, api_status=new_status)
+                api_status = new_status
+            if delivered:
+                return True, None, delivered
+            if api_status.lower() in ("failed", "cancelled", "canceled", "rejected"):
+                db.set_order_api_info(order_id, note=f"api reported: {api_status}")
+                return False, f"xprostore رجّعت الحالة: {api_status}", None
+
+    # Genuinely still processing - api_sync.py will pick it up and deliver
+    # it the moment xprostore.store finishes.
+    return True, None, None
 
 
-async def notify_admin_new_order(context, user, service, variant, order_id, email, link=None, api_failure=None):
+async def notify_admin_new_order(context, user, service, variant, order_id, email, link=None, api_failure=None,
+                                  delivered_instantly=False):
     from telegram import Bot
     admin_bot = Bot(token=config.ADMIN_BOT_TOKEN)
     if api_failure:
         lines = [f"🆕⚠️ طلب #{order_id} فشل تلقائيًا عبر API وتم استرجاع فلوس العميل"]
+    elif delivered_instantly:
+        lines = [f"🆕✅ طلب #{order_id} اتنفذ وتوصّل للعميل فورًا عبر API (مفيش حاجة تعملها)"]
     elif variant.get("api_service_id"):
-        lines = [f"🆕🤖 طلب #{order_id} (تم إرساله تلقائيًا عبر API)"]
+        lines = [f"🆕🤖 طلب #{order_id} (تم إرساله تلقائيًا عبر API، لسه بيتنفذ)"]
     else:
         lines = [f"🆕 طلب جديد #{order_id}"]
     lines += [
@@ -415,6 +478,10 @@ async def notify_admin_new_order(context, user, service, variant, order_id, emai
     if api_failure:
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ تم التسليم يدويًا", callback_data=f"admin_deliver:{order_id}")],
+            [InlineKeyboardButton("✉️ راسل العميل", callback_data=f"admin_msg_order:{order_id}")],
+        ])
+    elif delivered_instantly:
+        kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✉️ راسل العميل", callback_data=f"admin_msg_order:{order_id}")],
         ])
     else:
