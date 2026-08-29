@@ -111,6 +111,49 @@ cron job to copy `shop.db` somewhere safe on a schedule, e.g.:
 0 * * * * cp /path/to/shop.db /path/to/backups/shop-$(date +\%Y\%m\%d\%H\%M).db
 ```
 
+## xprostore.store API integration (auto-fulfillment)
+
+Any variant can now be linked to a service on xprostore.store so it's
+fulfilled automatically instead of by hand:
+
+1. Put your API key in `.env` as `XPROSTORE_API_KEY` (see `.env.example`).
+2. In the admin bot, open the variant → **🔗 ربط API** → send the
+   xprostore.store service ID (or send a keyword like "جيميناي" and it'll
+   suggest the closest matches with their IDs). Send "الغاء" to unlink and
+   make it manual again. **Owner-only** - sub-admins with the "services"
+   role can't link/unlink, since it moves real money through your
+   xprostore.store wallet.
+3. From then on, for that variant:
+   - A customer purchase calls the API immediately and fulfills itself -
+     nothing for you to do.
+   - If the API call fails (your xprostore balance ran out, a network
+     error, etc.), the customer is refunded automatically and told to try
+     again shortly; you get an admin alert with the exact error so you can
+     top up or fulfill it by hand if the service is otherwise available.
+   - Stock shown to customers is kept in sync with xprostore.store's live
+     quantity by `api_sync.py` (runs every `XPROSTORE_SYNC_INTERVAL`
+     seconds, default 180) - **your price is never touched**, only the
+     quantity.
+   - Every attempt (success or failure) is recorded on the order itself
+     (`api_order_id`, `api_status`, and a note on failure) and visible from
+     the order screen in the admin bot, so nothing gets fulfilled twice or
+     silently lost.
+4. Variants you never link stay exactly as before - fully manual, admin
+   delivers/refunds by hand.
+5. `run_both.py` now also starts `api_sync.py` as a third supervised
+   process; if you deploy the bots separately instead, start `api_sync.py`
+   as its own worker/service too, or the stock-sync and order-reconciliation
+   parts of the integration simply won't run.
+
+Two things worth knowing:
+- The exact path/shape for checking an individual order's status
+  (`xprostore_api.get_order`) was written from the same REST convention as
+  the other endpoints, since the full docs page requires login - if your
+  account's docs show a different path there, that's the one function to
+  adjust in `xprostore_api.py`.
+- `requests` was added to `requirements.html` for this - install it (or
+  redeploy on Railway, which reads that file automatically) before running.
+
 ## Notes / things worth knowing
 
 - SQLite is fine at this scale; if you outgrow it, only `db.py` needs to
@@ -124,3 +167,4 @@ cron job to copy `shop.db` somewhere safe on a schedule, e.g.:
   order (matches "بعد إتمام المُحال أول طلب له"). If you actually want it
   tied to *delivery* rather than *placing* the order, that's a one-line
   change in `db.maybe_pay_referral_bonus`.
+
