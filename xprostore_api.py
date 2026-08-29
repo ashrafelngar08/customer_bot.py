@@ -108,8 +108,16 @@ def create_order(service_id: str, quantity: int, idempotency_key: str, **extra_f
     """POST /orders - places a real order at xprostore.store. idempotency_key
     MUST be stable per local order (e.g. f"order-{order_id}") and MUST be
     reused as-is on any retry of the *same* local order, never regenerated -
-    that's what stops a retried/duplicated call from being billed twice."""
-    payload = {"service_id": str(service_id), "quantity": quantity, **extra_fields}
+    that's what stops a retried/duplicated call from being billed twice.
+
+    Always sends `currency` = your configured wallet currency (EGP by
+    default, see XPROSTORE_WALLET_CURRENCY) so a service listed in a
+    different currency (e.g. USDT) still gets paid from your actual wallet
+    with automatic conversion - same as buying manually through their own
+    bot, which does this implicitly. Pass currency=... in extra_fields to
+    override per-call if you ever need to."""
+    payload = {"service_id": str(service_id), "quantity": quantity,
+               "currency": config.XPROSTORE_WALLET_CURRENCY, **extra_fields}
     return _request(
         "POST", "/orders",
         headers=_headers({"Idempotency-Key": idempotency_key}),
