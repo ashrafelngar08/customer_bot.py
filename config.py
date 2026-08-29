@@ -32,3 +32,15 @@ SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@X_XRaa")
 SUPPORT_CHANNEL = os.getenv("SUPPORT_CHANNEL", "https://t.me/AshrafMediaPro")
 
 DATABASE_URL = _require("DATABASE_URL")
+
+# xprostore.store API integration (optional - only needed for services you
+# link via "🔗 ربط API" in the admin bot; unlinked services stay fully
+# manual and none of this is required for the bot to run).
+XPROSTORE_API_KEY = os.getenv("XPROSTORE_API_KEY", "")
+XPROSTORE_BASE_URL = os.getenv("XPROSTORE_BASE_URL", "https://xprostore.store/api/v1")
+# How often api_sync.py refreshes stock / polls order status, in seconds.
+XPROSTORE_SYNC_INTERVAL = int(os.getenv("XPROSTORE_SYNC_INTERVAL", "180"))
+# Alert the owner in the admin bot once the xprostore wallet balance drops
+# below this amount (in whatever currency /me/wallet reports), so you can
+# top it up before orders start failing.
+XPROSTORE_LOW_BALANCE_ALERT = float(os.getenv("XPROSTORE_LOW_BALANCE_ALERT", "5"))
