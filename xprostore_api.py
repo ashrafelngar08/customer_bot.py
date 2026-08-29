@@ -101,3 +101,33 @@ def get_order(api_order_id: str) -> dict:
     as the other endpoints. If your account's docs show a different path,
     update ORDER_STATUS_PATH below and nothing else needs to change."""
     return _request("GET", f"/orders/{api_order_id}", headers=_headers())
+
+
+# Field names commonly used by reseller panels for "here's the actual
+# account/code the customer paid for", tried in this order. If your
+# xprostore.store responses use a different key, add it to the front of
+# this list - that's the only change needed anywhere in the integration.
+_DELIVERY_FIELDS = ("delivered_content", "account", "credentials", "content",
+                     "data", "result", "info", "details", "text", "message")
+
+
+def extract_delivered_content(resp: dict):
+    """Looks for the delivered account/code inside a create_order or
+    get_order response. Returns a string to show the customer, or None if
+    the order is genuinely still processing (nothing to deliver yet)."""
+    if not isinstance(resp, dict):
+        return None
+    for key in _DELIVERY_FIELDS:
+        val = resp.get(key)
+        if val is None:
+            continue
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        if isinstance(val, dict):
+            # Common shape: {"data": {"email": "...", "password": "..."}}
+            parts = [f"{k}: {v}" for k, v in val.items() if v not in (None, "")]
+            if parts:
+                return "\n".join(parts)
+        if isinstance(val, list) and val:
+            return "\n".join(str(x) for x in val)
+    return None
