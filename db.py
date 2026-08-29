@@ -648,4 +648,3 @@ def list_admins():
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM admins ORDER BY added_at").fetchall()
         return [dict(r) for r in rows]
-
