@@ -111,7 +111,11 @@ def reconcile_pending_orders(admin_bot: Bot):
         if api_status in API_DONE_STATUSES:
             db.set_order_status(order["id"], "delivered")
             db.set_order_api_info(order["id"], api_status=api_status)
-            _notify_customer(order, "✅ تم تسليم طلبك بنجاح، تقدر تشوف التفاصيل من (طلباتي).")
+            delivered = xprostore_api.extract_delivered_content(resp)
+            if delivered:
+                _notify_customer(order, f"✅ تم تسليم طلبك بنجاح!\n\n📦 التفاصيل:\n{delivered}")
+            else:
+                _notify_customer(order, "✅ تم تسليم طلبك بنجاح، تقدر تشوف التفاصيل من (طلباتي).")
         elif api_status in API_FAILED_STATUSES:
             refunded = db.refund_order(order["id"])
             if refunded:
