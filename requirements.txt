@@ -2,3 +2,4 @@ python-telegram-bot>=22.8
 python-dotenv==1.0.1
 psycopg2-binary
 deep-translator==1.11.4
+requests>=2.31
