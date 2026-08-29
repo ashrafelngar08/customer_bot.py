@@ -44,3 +44,9 @@ XPROSTORE_SYNC_INTERVAL = int(os.getenv("XPROSTORE_SYNC_INTERVAL", "180"))
 # below this amount (in whatever currency /me/wallet reports), so you can
 # top it up before orders start failing.
 XPROSTORE_LOW_BALANCE_ALERT = float(os.getenv("XPROSTORE_LOW_BALANCE_ALERT", "5"))
+# The currency your xprostore.store wallet is actually funded in. Sent with
+# every order so a service listed in a different currency (e.g. USDT) still
+# gets paid from this wallet automatically, the same way it works when you
+# buy manually from their own bot - it's just not implied by default on the
+# reseller API the way it is in their UI.
+XPROSTORE_WALLET_CURRENCY = os.getenv("XPROSTORE_WALLET_CURRENCY", "EGP")
