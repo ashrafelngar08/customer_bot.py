@@ -104,30 +104,60 @@ def get_order(api_order_id: str) -> dict:
 
 
 # Field names commonly used by reseller panels for "here's the actual
-# account/code the customer paid for", tried in this order. If your
-# xprostore.store responses use a different key, add it to the front of
-# this list - that's the only change needed anywhere in the integration.
-_DELIVERY_FIELDS = ("delivered_content", "account", "credentials", "content",
-                     "data", "result", "info", "details", "text", "message")
+# account/code the customer paid for". "delivered_items" is xprostore.store's
+# real field name (confirmed from a live order response); the rest are kept
+# as fallbacks in case a different service type on their panel uses another
+# shape.
+_DELIVERY_FIELDS = ("delivered_items", "delivered_content", "account", "credentials", "content")
+
+# Internal/business fields that must NEVER be shown to a customer even if
+# they end up inside whatever dict we're scanning - your cost price, your
+# xprostore wallet balance, and their internal order bookkeeping are none of
+# the customer's business.
+_NEVER_SHOW = {"price_amount", "price_currency_code", "balance_after", "have_discount",
+               "order_id", "order_number", "status", "created_at", "quantity", "service_id"}
 
 
 def extract_delivered_content(resp: dict):
     """Looks for the delivered account/code inside a create_order or
     get_order response. Returns a string to show the customer, or None if
-    the order is genuinely still processing (nothing to deliver yet)."""
+    the order is genuinely still processing (nothing to deliver yet).
+
+    Deliberately narrow: only ever returns the specific delivery field's
+    content, never a generic dump of the surrounding order object - that
+    object carries your cost price and wallet balance, which must never
+    reach a customer."""
     if not isinstance(resp, dict):
         return None
-    for key in _DELIVERY_FIELDS:
-        val = resp.get(key)
-        if val is None:
-            continue
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-        if isinstance(val, dict):
-            # Common shape: {"data": {"email": "...", "password": "..."}}
-            parts = [f"{k}: {v}" for k, v in val.items() if v not in (None, "")]
-            if parts:
-                return "\n".join(parts)
-        if isinstance(val, list) and val:
-            return "\n".join(str(x) for x in val)
+    # Some responses nest everything under "data" or "result" - look one
+    # level in for the same field names, but still only ever extract the
+    # named delivery field, never the wrapper object itself.
+    candidates = [resp]
+    for wrapper_key in ("data", "result"):
+        wrapped = resp.get(wrapper_key)
+        if isinstance(wrapped, dict):
+            candidates.append(wrapped)
+
+    for obj in candidates:
+        for key in _DELIVERY_FIELDS:
+            if key in _NEVER_SHOW:
+                continue
+            val = obj.get(key)
+            if val is None:
+                continue
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+            if isinstance(val, list) and val:
+                # e.g. delivered_items: ["email|password|..."] - one or more
+                # accounts, shown one per line exactly as issued.
+                items = [str(x).strip() for x in val if str(x).strip()]
+                if items:
+                    return "\n".join(items)
+            if isinstance(val, dict):
+                # e.g. {"email": "...", "password": "..."} - a single
+                # structured account, not the order wrapper.
+                parts = [f"{k}: {v}" for k, v in val.items()
+                         if k not in _NEVER_SHOW and v not in (None, "")]
+                if parts:
+                    return "\n".join(parts)
     return None
