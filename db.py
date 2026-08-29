@@ -80,7 +80,13 @@ CREATE TABLE IF NOT EXISTS variants (
     requires_email INTEGER NOT NULL DEFAULT 0,
     requires_link INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
-    sort_order INTEGER NOT NULL DEFAULT 0
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    -- NULL = manual/no API link (admin fulfills by hand, as before).
+    -- Set = this variant is auto-fulfilled through the xprostore.store API
+    -- (see xprostore_api.py); stock is then kept in sync from the API and
+    -- is no longer meant to be edited by hand (the +/-  buttons still work
+    -- but api_sync.py will overwrite the value on its next pass).
+    api_service_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -95,7 +101,12 @@ CREATE TABLE IF NOT EXISTS orders (
     link TEXT,
     created_at BIGINT NOT NULL,
     delivered_at BIGINT,
-    note TEXT
+    note TEXT,
+    -- Set only for orders placed through a variant linked to the
+    -- xprostore.store API (see xprostore_api.py / api_sync.py).
+    api_order_id TEXT,
+    api_status TEXT,
+    idempotency_key TEXT
 );
 
 CREATE TABLE IF NOT EXISTS topups (
@@ -176,6 +187,11 @@ def init_db():
         # the pre-existing "requires an email" option.
         conn.execute("ALTER TABLE variants ADD COLUMN IF NOT EXISTS requires_link INTEGER NOT NULL DEFAULT 0")
         conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS link TEXT")
+        # Migration for DBs created before the xprostore.store API integration.
+        conn.execute("ALTER TABLE variants ADD COLUMN IF NOT EXISTS api_service_id TEXT")
+        conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS api_order_id TEXT")
+        conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS api_status TEXT")
+        conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS idempotency_key TEXT")
         # Seed starter categories/services only on first run
         row = conn.execute("SELECT COUNT(*) c FROM categories").fetchone()
         if row["c"] == 0:
@@ -436,7 +452,7 @@ def delete_variant(variant_id: int):
 
 def update_variant_field(variant_id: int, field: str, value):
     allowed = {"name_ar", "name_en", "details_ar", "details_en", "price_egp", "stock", "requires_email",
-               "requires_link", "hidden"}
+               "requires_link", "hidden", "api_service_id"}
     if field not in allowed:
         raise ValueError("field not allowed")
     with get_conn() as conn:
@@ -449,6 +465,24 @@ def adjust_variant_stock(variant_id: int, delta: int):
         if row is None or row["stock"] < 0:
             return  # unlimited stock, nothing to track
         conn.execute("UPDATE variants SET stock = GREATEST(stock + ?, 0) WHERE id=?", (delta, variant_id))
+
+
+def set_variant_stock(variant_id: int, stock: int):
+    """Set stock to an absolute value - used by api_sync.py to mirror the
+    API's reported quantity exactly, instead of nudging it by a delta."""
+    with get_conn() as conn:
+        conn.execute("UPDATE variants SET stock=? WHERE id=?", (stock, variant_id))
+
+
+def list_api_linked_variants():
+    """All variants linked to an xprostore.store service (api_service_id set),
+    for the stock-sync job. Includes hidden ones so their stock stays correct
+    if they're ever unhidden."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM variants WHERE api_service_id IS NOT NULL AND api_service_id != ''"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ---------------- Orders ----------------
@@ -501,6 +535,35 @@ def refund_order(order_id):
         conn.execute("UPDATE users SET balance = balance + ?, total_spent = total_spent - ? WHERE id=?",
                      (order["price_egp"], order["price_egp"], order["user_id"]))
         return dict(order)
+
+
+def set_order_api_info(order_id, api_order_id=None, api_status=None, idempotency_key=None, note=None):
+    """Records the result of dispatching an order to the xprostore.store API
+    (or the fact that it was attempted) so every attempt is auditable from
+    the admin bot, whatever the outcome."""
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE orders SET
+                 api_order_id = COALESCE(?, api_order_id),
+                 api_status = COALESCE(?, api_status),
+                 idempotency_key = COALESCE(?, idempotency_key),
+                 note = COALESCE(?, note)
+               WHERE id=?""",
+            (api_order_id, api_status, idempotency_key, note, order_id),
+        )
+
+
+def list_pending_api_orders():
+    """Orders dispatched to the API that aren't in a final state yet, for
+    api_sync.py to poll and reconcile."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM orders
+               WHERE api_order_id IS NOT NULL
+                 AND status NOT IN ('delivered', 'refunded')
+               ORDER BY id"""
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ---------------- Top-ups ----------------
