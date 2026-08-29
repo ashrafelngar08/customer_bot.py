@@ -164,7 +164,6 @@ Two things worth knowing:
   to keep the code simple and reliable — you can tighten this into a full
   step-by-step form later if you want friendlier data entry.
 - Referral bonus pays out once, the first time the referred user places an
-  order (matches "بعد إتمام المُحال أول طلب له"). If you actually want it
+  order (matches بعدد إتمام المُحال أول طلب له"). If you actually want it
   tied to *delivery* rather than *placing* the order, that's a one-line
   change in `db.maybe_pay_referral_bonus`.
-
