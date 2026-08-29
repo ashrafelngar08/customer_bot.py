@@ -66,9 +66,16 @@ def _error_detail(body) -> str:
             val = body.get(key)
             if isinstance(val, str) and val.strip():
                 return val.strip()
-        return ""
+        # None of the expected keys matched - show the raw body instead of
+        # nothing, so the actual reason is visible even if xprostore.store
+        # names its error field something we didn't anticipate.
+        try:
+            import json
+            return json.dumps(body, ensure_ascii=False)[:300]
+        except Exception:
+            return str(body)[:300]
     if isinstance(body, str):
-        return body.strip()[:200]
+        return body.strip()[:300]
     return ""
 
 
