@@ -110,14 +110,13 @@ def create_order(service_id: str, quantity: int, idempotency_key: str, **extra_f
     reused as-is on any retry of the *same* local order, never regenerated -
     that's what stops a retried/duplicated call from being billed twice.
 
-    Always sends `currency` = your configured wallet currency (EGP by
-    default, see XPROSTORE_WALLET_CURRENCY) so a service listed in a
-    different currency (e.g. USDT) still gets paid from your actual wallet
-    with automatic conversion - same as buying manually through their own
-    bot, which does this implicitly. Pass currency=... in extra_fields to
-    override per-call if you ever need to."""
-    payload = {"service_id": str(service_id), "quantity": quantity,
-               "currency": config.XPROSTORE_WALLET_CURRENCY, **extra_fields}
+    Doesn't send a currency hint - xprostore.store rejects a service whose
+    listed currency doesn't match a wallet you actually hold funds in
+    ("currency_mismatch"), and a currency field in the payload was tried and
+    confirmed to have no effect. The fix is holding a balance in whatever
+    currency each linked service needs (see README) - once you do, this
+    works with no extra field required."""
+    payload = {"service_id": str(service_id), "quantity": quantity, **extra_fields}
     return _request(
         "POST", "/orders",
         headers=_headers({"Idempotency-Key": idempotency_key}),
