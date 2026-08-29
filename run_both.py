@@ -1,3 +1,4 @@
+
 """
 Runs both bots together in one process group. Used on hosts (like a single
 Railway service) where you only get one deployable process but want the
@@ -37,12 +38,14 @@ def main():
 
     start("customer_bot", "customer_bot.py")
     start("admin_bot", "admin_bot.py")
+    start("api_sync", "api_sync.py")
 
-    # Watch both processes; if one crashes, restart just that one after a
-    # short delay so a bug in one bot doesn't take the other down for good.
+    # Watch all processes; if one crashes, restart just that one after a
+    # short delay so a bug in one doesn't take the others down for good.
     while True:
         time.sleep(3)
-        for name, script in [("customer_bot", "customer_bot.py"), ("admin_bot", "admin_bot.py")]:
+        for name, script in [("customer_bot", "customer_bot.py"), ("admin_bot", "admin_bot.py"),
+                              ("api_sync", "api_sync.py")]:
             proc = PROCS.get(name)
             if proc is not None and proc.poll() is not None:
                 print(f"[run_both] {name} exited with code {proc.returncode}, restarting in 3s...", flush=True)
