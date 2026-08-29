@@ -50,10 +50,26 @@ def _request(method: str, path: str, **kwargs) -> dict:
     if not resp.ok:
         body = _safe_body(resp)
         log.error("xprostore API error %s on %s %s: %s", resp.status_code, method, path, body)
-        raise XProStoreError(
-            f"xprostore API رجّع خطأ {resp.status_code}", status_code=resp.status_code, body=body
-        )
+        detail = _error_detail(body)
+        message = f"xprostore API رجّع خطأ {resp.status_code}" + (f": {detail}" if detail else "")
+        raise XProStoreError(message, status_code=resp.status_code, body=body)
     return _safe_body(resp)
+
+
+def _error_detail(body) -> str:
+    """Pulls a human-readable reason out of an error response body, e.g.
+    {"message": "insufficient balance"} or {"error": "..."} - so the admin
+    sees WHY it failed (out of xprostore balance? bad service id? duplicate
+    order?), not just a bare status code."""
+    if isinstance(body, dict):
+        for key in ("message", "error", "error_message", "detail", "reason"):
+            val = body.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        return ""
+    if isinstance(body, str):
+        return body.strip()[:200]
+    return ""
 
 
 def _safe_body(resp):
