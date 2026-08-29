@@ -1,5 +1,6 @@
 import logging
 import re
+import asyncio
 from datetime import datetime
 
 from telegram import (
@@ -15,6 +16,7 @@ from telegram.error import TelegramError
 
 import config
 import db
+import xprostore_api
 from i18n import t
 from pricing import format_price
 
@@ -299,6 +301,30 @@ async def finalize_order(target, context, lang, user, variant, email=None, link=
     full_name_ar = f"{service['name_ar']} — {variant['name_ar']}"
     order_id = db.create_order(user["id"], service["id"], variant["id"], full_name_ar, variant["price_egp"], email, link)
 
+    # Services linked to the xprostore.store API (see admin bot -> "🔗 ربط API")
+    # are fulfilled automatically right here. Anything not linked stays fully
+    # manual, exactly like before - an admin actions it from the new-order
+    # notification below.
+    api_service_id = variant.get("api_service_id")
+    if api_service_id:
+        ok, error_text, api_resp = await dispatch_order_to_api(order_id, variant, email, link)
+        if not ok:
+            # Never keep a customer's money for an order that didn't actually
+            # go through - refund immediately and say so plainly, don't show
+            # a success message for something that failed.
+            db.refund_order(order_id)
+            db.adjust_variant_stock(variant["id"], +1)
+            text = t("api_order_failed", lang) if _has_key("api_order_failed") else (
+                "⚠️ في مشكلة مؤقتة وطلبك فشل، وتم إرجاع فلوسك لرصيدك. جرب تاني بعد شوية، ولو تكرر كلم الدعم."
+                if lang == "ar" else
+                "⚠️ Something went wrong and your order couldn't go through — you've been refunded. "
+                "Please try again shortly, or contact support if it keeps happening."
+            )
+            await respond(target, text)
+            await notify_admin_new_order(context, db.get_user_by_id(user["id"]), service, variant, order_id,
+                                          email, link, api_failure=error_text)
+            return
+
     # Pay referral bonus if this is the referred user's first order
     if db.maybe_pay_referral_bonus(user["id"], config.REFERRAL_BONUS_EGP):
         referrer = db.get_user_by_id(user["referred_by"]) if user["referred_by"] else None
@@ -323,11 +349,57 @@ async def finalize_order(target, context, lang, user, variant, email=None, link=
     await notify_admin_new_order(context, fresh_user, service, variant, order_id, email, link)
 
 
-async def notify_admin_new_order(context, user, service, variant, order_id, email, link=None):
+def _has_key(key):
+    try:
+        t(key, "ar")
+        return True
+    except Exception:
+        return False
+
+
+async def dispatch_order_to_api(order_id, variant, email=None, link=None):
+    """Places the order at xprostore.store for a variant linked via
+    api_service_id. Returns (ok, error_text, raw_response).
+
+    idempotency_key is derived from our own order_id and never regenerated,
+    so if this ever runs twice for the same order (e.g. a retry after a
+    timeout) xprostore.store treats it as the same request instead of
+    charging/creating it twice - this is the "don't send the same order
+    twice" requirement.
+    """
+    idempotency_key = f"order-{order_id}"
+    extra = {}
+    if email:
+        extra["email"] = email
+    if link:
+        extra["link"] = link
+    try:
+        resp = await asyncio.to_thread(
+            xprostore_api.create_order, variant["api_service_id"], 1, idempotency_key, **extra
+        )
+    except xprostore_api.XProStoreError as e:
+        log.error("xprostore order dispatch failed for local order #%s: %s (body=%s)", order_id, e, e.body)
+        db.set_order_api_info(order_id, api_status="failed", idempotency_key=idempotency_key,
+                               note=f"api_error: {e}")
+        return False, str(e), None
+
+    api_order_id = str(resp.get("id") or resp.get("order_id") or resp.get("data", {}).get("id") or "")
+    api_status = resp.get("status") or "submitted"
+    db.set_order_api_info(order_id, api_order_id=api_order_id or None, api_status=api_status,
+                           idempotency_key=idempotency_key)
+    return True, None, resp
+
+
+async def notify_admin_new_order(context, user, service, variant, order_id, email, link=None, api_failure=None):
     from telegram import Bot
     admin_bot = Bot(token=config.ADMIN_BOT_TOKEN)
-    lines = [
-        f"🆕 طلب جديد #{order_id}",
+    if api_failure:
+        lines = [f"🆕⚠️ طلب #{order_id} فشل تلقائيًا عبر API وتم استرجاع فلوس العميل"]
+    elif variant.get("api_service_id"):
+        lines = [f"🆕🤖 طلب #{order_id} (تم إرساله تلقائيًا عبر API)"]
+    else:
+        lines = [f"🆕 طلب جديد #{order_id}"]
+    lines += [
         f"👤 العميل: {user['telegram_id']} (@{user['username']})",
         f"📦 الخدمة: {service['name_ar']} — {variant['name_ar']}",
         f"💵 السعر: {variant['price_egp']:.2f} EGP",
@@ -336,12 +408,21 @@ async def notify_admin_new_order(context, user, service, variant, order_id, emai
         lines.append(f"📧 الإيميل: {email}")
     if link:
         lines.append(f"🔗 الرابط: {link}")
+    if api_failure:
+        lines.append(f"❌ سبب الفشل: {api_failure}")
+        lines.append("↩️ الفلوس اترجعت للعميل تلقائيًا. لو الخدمة متاحة، وصّلها له يدويًا وسجّل التسليم يدوي.")
     text = "\n".join(lines)
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ تم التسليم", callback_data=f"admin_deliver:{order_id}"),
-         InlineKeyboardButton("♻️ إلغاء واسترجاع", callback_data=f"admin_refund:{order_id}")],
-        [InlineKeyboardButton("✉️ راسل العميل", callback_data=f"admin_msg_order:{order_id}")],
-    ])
+    if api_failure:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ تم التسليم يدويًا", callback_data=f"admin_deliver:{order_id}")],
+            [InlineKeyboardButton("✉️ راسل العميل", callback_data=f"admin_msg_order:{order_id}")],
+        ])
+    else:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ تم التسليم", callback_data=f"admin_deliver:{order_id}"),
+             InlineKeyboardButton("♻️ إلغاء واسترجاع", callback_data=f"admin_refund:{order_id}")],
+            [InlineKeyboardButton("✉️ راسل العميل", callback_data=f"admin_msg_order:{order_id}")],
+        ])
     try:
         await admin_bot.send_message(config.ADMIN_ID, text, reply_markup=kb)
     except TelegramError as e:
