@@ -339,7 +339,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         # Try the same field-name guesses api_sync.py uses, so we can tell
         # whether the guess actually matched something for this service.
-        stock_val = match.get("stock", match.get("quantity"))
+        # Confirmed field names (from a real xprostore.store service entry):
+        # available_inventory_count / track_inventory / stock_status.
+        if match.get("track_inventory") is False:
+            stock_val = -1
+        elif str(match.get("stock_status", "")).lower() == "out_of_stock":
+            stock_val = 0
+        else:
+            stock_val = match.get("available_inventory_count")
+            if stock_val is None:
+                stock_val = match.get("stock", match.get("quantity"))
         applied_note = ""
         if stock_val is not None:
             try:
@@ -1069,3 +1078,4 @@ if __name__ == "__main__":
     application = build_app()
     log.info("Admin bot starting...")
     application.run_polling()
+
