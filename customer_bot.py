@@ -230,14 +230,9 @@ async def show_variants(query, lang, svc_id):
     buttons = []
     for v in variants:
         name = v["name_ar"] if lang == "ar" else v["name_en"]
-        if v["stock"] == 0:
-            label = f"{name} ❌"
-        elif v["stock"] < 0:
-            label = name  # unlimited stock - no need to clutter the button with a number
-        else:
-            label = f"{name} ({v['stock']})"
+        label = f"{name} ❌" if v["stock"] == 0 else name
         buttons.append(InlineKeyboardButton(label, callback_data=f"var:{v['id']}"))
-    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows = [[b] for b in buttons]
     rows.append([InlineKeyboardButton(t("back", lang), callback_data=f"cat:{service['category_id']}")])
     await query.edit_message_text(t("choose_variant", lang), reply_markup=InlineKeyboardMarkup(rows))
 
