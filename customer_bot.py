@@ -381,73 +381,101 @@ def _has_key(key):
 
 async def dispatch_order_to_api(order_id, variant, email=None, link=None):
     """Places the order at xprostore.store for a variant linked via
-    api_service_id. Returns (ok, error_text, delivered_content).
+    api_service_id. api_service_id may be a single ID or a comma-separated
+    list ("13,129") for the same product listed under different xprostore
+    service IDs (e.g. an EGP-priced and a USDT-priced listing) - each is
+    tried in order, falling through to the next on failure, so whichever
+    currency you actually have balance in gets used automatically.
+
+    Returns (ok, error_text, delivered_content).
 
     delivered_content is the actual account/code to hand the customer right
     now, or None if xprostore.store hasn't produced it yet (a slower
     service) - in that case api_sync.py's background polling delivers it
     the moment it's ready.
-
-    idempotency_key is derived from our own order_id and never regenerated,
-    so if this ever runs twice for the same order (e.g. a retry after a
-    timeout) xprostore.store treats it as the same request instead of
-    charging/creating it twice - this is the "don't send the same order
-    twice" requirement.
     """
-    idempotency_key = f"order-{order_id}"
-    extra = {}
+    candidates = [c.strip() for c in str(variant["api_service_id"]).split(",") if c.strip()]
+    custom_field_values = {}
     if email:
-        extra["email"] = email
+        custom_field_values["email"] = email
     if link:
-        extra["link"] = link
-    try:
-        resp = await asyncio.to_thread(
-            xprostore_api.create_order, variant["api_service_id"], 1, idempotency_key, **extra
-        )
-    except xprostore_api.XProStoreError as e:
-        log.error("xprostore order dispatch failed for local order #%s: %s (body=%s)", order_id, e, e.body)
-        db.set_order_api_info(order_id, api_status="failed", idempotency_key=idempotency_key,
-                               note=f"api_error: {e}")
-        return False, str(e), None
+        custom_field_values["link"] = link
 
-    api_order_id = str(resp.get("id") or resp.get("order_id") or resp.get("data", {}).get("id") or "")
-    api_status = str(resp.get("status") or "submitted")
-    db.set_order_api_info(order_id, api_order_id=api_order_id or None, api_status=api_status,
-                           idempotency_key=idempotency_key)
+    last_error = None
+    for candidate_id in candidates:
+        # A distinct idempotency key per candidate service ID - these are
+        # genuinely different listings at xprostore, so falling through to
+        # the next one must not be treated as a retry of the same request.
+        # Re-trying the SAME candidate (e.g. bot restart mid-flight) still
+        # reuses this exact key, which is what stops double-billing.
+        idempotency_key = f"order-{order_id}-{candidate_id}"
+        try:
+            resp = await asyncio.to_thread(
+                xprostore_api.create_order, candidate_id, 1, idempotency_key,
+                client_reference=f"order-{order_id}",
+                custom_field_values=custom_field_values or None,
+            )
+        except xprostore_api.XProStoreError as e:
+            log.warning("xprostore order dispatch failed for local order #%s via service %s: %s",
+                        order_id, candidate_id, e)
+            last_error = e
+            db.set_order_api_info(order_id, api_status="failed", idempotency_key=idempotency_key,
+                                   note=f"api_error (service {candidate_id}): {e}")
+            continue  # try the next candidate ID, if any
 
-    # Most stock-account services (ready-made accounts, activation links) are
-    # actually instant - the create-order response often already carries the
-    # goods. Check that first.
-    delivered = xprostore_api.extract_delivered_content(resp)
-    if delivered:
-        return True, None, delivered
+        api_order_id = str(resp.get("id") or resp.get("order_id") or resp.get("data", {}).get("id") or "")
+        api_status = str(resp.get("status") or "submitted")
+        db.set_order_api_info(order_id, api_order_id=api_order_id or None, api_status=api_status,
+                               idempotency_key=idempotency_key)
 
-    # Not in the create response and not already a final status - give it a
-    # few short checks (a couple of seconds apart) in case xprostore.store
-    # just needs a moment to attach it, so the customer still gets it
-    # instantly instead of waiting for the next background sync cycle.
-    if api_order_id and api_status.lower() not in ("completed", "delivered", "done",
-                                                    "failed", "cancelled", "canceled", "rejected"):
-        for _ in range(3):
-            await asyncio.sleep(2)
-            try:
-                check = await asyncio.to_thread(xprostore_api.get_order, api_order_id)
-            except xprostore_api.XProStoreError:
-                break
-            delivered = xprostore_api.extract_delivered_content(check)
-            new_status = str(check.get("status") or api_status)
-            if new_status != api_status:
-                db.set_order_api_info(order_id, api_status=new_status)
-                api_status = new_status
-            if delivered:
-                return True, None, delivered
-            if api_status.lower() in ("failed", "cancelled", "canceled", "rejected"):
-                db.set_order_api_info(order_id, note=f"api reported: {api_status}")
-                return False, f"xprostore رجّعت الحالة: {api_status}", None
+        # Most stock-account services (ready-made accounts, activation links)
+        # are actually instant - the create-order response often already
+        # carries the goods. Check that first.
+        delivered = xprostore_api.extract_delivered_content(resp)
+        if delivered:
+            return True, None, delivered
 
-    # Genuinely still processing - api_sync.py will pick it up and deliver
-    # it the moment xprostore.store finishes.
-    return True, None, None
+        # Not in the create response and not already a final status - give
+        # it a few short checks (a couple of seconds apart) in case
+        # xprostore.store just needs a moment to attach it, so the customer
+        # still gets it instantly instead of waiting for the next
+        # background sync cycle.
+        if api_order_id and api_status.lower() not in ("completed", "delivered", "done",
+                                                        "failed", "cancelled", "canceled", "rejected"):
+            for _ in range(3):
+                await asyncio.sleep(2)
+                try:
+                    check = await asyncio.to_thread(xprostore_api.get_order, api_order_id)
+                except xprostore_api.XProStoreError:
+                    break
+                delivered = xprostore_api.extract_delivered_content(check)
+                new_status = str(check.get("status") or api_status)
+                if new_status != api_status:
+                    db.set_order_api_info(order_id, api_status=new_status)
+                    api_status = new_status
+                if delivered:
+                    return True, None, delivered
+                if api_status.lower() in ("failed", "cancelled", "canceled", "rejected"):
+                    db.set_order_api_info(order_id, note=f"api reported: {api_status}")
+                    last_error = f"xprostore رجّعت الحالة: {api_status}"
+                    break
+            else:
+                # Genuinely still processing (never hit a terminal status) -
+                # api_sync.py will pick it up and deliver it the moment
+                # xprostore.store finishes.
+                return True, None, None
+            if isinstance(last_error, str):
+                continue  # that candidate ended up failing too - try the next
+            return True, None, None
+
+        # Already a final status right from the create call.
+        if api_status.lower() in ("completed", "delivered", "done"):
+            return True, None, None
+        if api_status.lower() in ("failed", "cancelled", "canceled", "rejected"):
+            last_error = f"xprostore رجّعت الحالة: {api_status}"
+            continue
+
+    return False, str(last_error) if last_error else "كل محاولات الربط فشلت", None
 
 
 async def notify_admin_new_order(context, user, service, variant, order_id, email, link=None, api_failure=None,
