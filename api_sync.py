@@ -60,7 +60,15 @@ def sync_stock(admin_bot: Bot):
             log.warning("linked variant #%s -> api_service_id=%s not found in API service list anymore",
                         variant["id"], api_id)
             continue
-        remote_stock = remote.get("stock", remote.get("quantity"))
+        remote_stock = remote.get("stock")
+        if remote_stock is None:
+            remote_stock = remote.get("quantity")
+        if remote_stock is None:
+            remote_stock = remote.get("available_quantity")
+        if remote_stock is None:
+            remote_stock = remote.get("stock_count")
+        if remote_stock is None:
+            remote_stock = remote.get("available")
         if remote_stock is None:
             continue
         try:
@@ -164,3 +172,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
