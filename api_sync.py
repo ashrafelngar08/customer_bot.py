@@ -60,15 +60,24 @@ def sync_stock(admin_bot: Bot):
             log.warning("linked variant #%s -> api_service_id=%s not found in API service list anymore",
                         variant["id"], api_id)
             continue
-        remote_stock = remote.get("stock")
-        if remote_stock is None:
-            remote_stock = remote.get("quantity")
-        if remote_stock is None:
-            remote_stock = remote.get("available_quantity")
-        if remote_stock is None:
-            remote_stock = remote.get("stock_count")
-        if remote_stock is None:
-            remote_stock = remote.get("available")
+        # Confirmed field names from a real xprostore.store service entry:
+        # available_inventory_count (the actual count), track_inventory
+        # (false = this service isn't stock-limited at all -> unlimited on
+        # our side too), stock_status ("out_of_stock" overrides everything
+        # else to 0, even if a stale count is still present).
+        if remote.get("track_inventory") is False:
+            remote_stock = -1  # unlimited, matches this bot's own convention
+        elif str(remote.get("stock_status", "")).lower() == "out_of_stock":
+            remote_stock = 0
+        else:
+            remote_stock = remote.get("available_inventory_count")
+            if remote_stock is None:
+                # Fallback guesses in case a different service type on your
+                # panel doesn't use this exact field name.
+                for key in ("stock", "quantity", "available_quantity", "stock_count", "available"):
+                    if remote.get(key) is not None:
+                        remote_stock = remote.get(key)
+                        break
         if remote_stock is None:
             continue
         try:
@@ -172,4 +181,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
