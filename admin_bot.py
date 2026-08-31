@@ -300,6 +300,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "أرسل رقم الـ ID بتاع الخدمة في xprostore.store عشان تربطها بالنسخة دي "
             "(الطلبات هتتنفذ تلقائيًا وهيتحدث المخزون لوحده).\n\n"
+            "الخدمة عندها أكتر من نسخة (جنيه ودولار)؟ ابعت الأرقام مفصولة بفاصلة زي: 13,129 "
+            "- هيجرب الأول، ولو فشل (مثلاً رصيدك بالعملة دي خلص) يجرب اللي بعده تلقائيًا.\n\n"
             "معرفش الـ ID؟ ابعت جزء من اسم الخدمة (زي: جيميناي) وهجيبلك أقرب الخدمات في القائمة.\n\n"
             "ابعت \"الغاء\" عشان تفك الربط وترجعها يدوية."
         )
@@ -312,11 +314,52 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_variant_field(variant_id, "api_service_id", None)
         await show_variant_admin(query, variant_id)
 
+    elif data.startswith("var:syncnow:"):
+        if role != ROLE_OWNER:
+            await query.answer("🚫 متاح لصاحب البوت بس.", show_alert=True)
+            return
+        variant_id = int(data.split(":")[2])
+        v = db.get_variant(variant_id)
+        primary_id = str(v["api_service_id"]).split(",")[0].strip()
+        try:
+            services = xprostore_api.list_services()
+        except xprostore_api.XProStoreError as e:
+            await query.answer(f"⚠️ تعذر جلب القائمة: {e}", show_alert=True)
+            return
+        match = None
+        for s in services:
+            sid = str(s.get("id") or s.get("service_id") or "")
+            if sid == primary_id:
+                match = s
+                break
+        if not match:
+            await query.message.reply_text(
+                f"⚠️ الخدمة رقم {primary_id} مش موجودة في قائمة الـ API دلوقتي (اتقفلت أو اتغير رقمها؟)."
+            )
+            return
+        # Try the same field-name guesses api_sync.py uses, so we can tell
+        # whether the guess actually matched something for this service.
+        stock_val = match.get("stock", match.get("quantity"))
+        applied_note = ""
+        if stock_val is not None:
+            try:
+                stock_int = int(stock_val)
+                db.set_variant_stock(variant_id, stock_int)
+                applied_note = f"\n✅ تم تحديث المخزون المحلي إلى: {stock_int}"
+            except (TypeError, ValueError):
+                applied_note = "\n⚠️ القيمة اللي لقيتها مش رقم صحيح، معرفتش أطبقها."
+        else:
+            applied_note = "\n⚠️ مفيش حقل stock/quantity في الرد - محتاجين نشوف الرد الخام تحت ونعرف الاسم الصح."
+        import json
+        raw = json.dumps(match, ensure_ascii=False, indent=2)[:1500]
+        await query.message.reply_text(f"📦 الرد الخام لخدمة {primary_id} من xprostore:\n\n{raw}{applied_note}")
+
     elif data == "xprostore:wallet":
         try:
             wallet = xprostore_api.get_wallet()
-            balance = wallet.get("balance", wallet.get("amount", "؟"))
-            await query.answer(f"💰 رصيدك في xprostore.store: {balance}", show_alert=True)
+            import json
+            pretty = json.dumps(wallet, ensure_ascii=False, indent=2) if isinstance(wallet, (dict, list)) else str(wallet)
+            await query.message.reply_text(f"💰 رصيدك في xprostore.store:\n\n{pretty}")
         except xprostore_api.XProStoreError as e:
             await query.answer(f"⚠️ تعذر جلب الرصيد: {e}", show_alert=True)
 
@@ -511,8 +554,10 @@ async def show_variant_admin(query, variant_id):
         ([InlineKeyboardButton("🔌 فك الربط بـ API", callback_data=f"var:unlinkapi:{variant_id}")]
          if v.get("api_service_id") else
          [InlineKeyboardButton("🔗 ربط API", callback_data=f"var:linkapi:{variant_id}")]),
-        [InlineKeyboardButton("🔙 رجوع", callback_data=f"svc:view:{v['service_id']}")],
     ]
+    if v.get("api_service_id"):
+        rows.append([InlineKeyboardButton("🔄 مزامنة المخزون الآن", callback_data=f"var:syncnow:{variant_id}")])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"svc:view:{v['service_id']}")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
 
 
@@ -934,11 +979,15 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.update_variant_field(variant_id, "api_service_id", None)
             await update.message.reply_text("✅ تم فك الربط، النسخة رجعت يدوية.")
             return
-        if text.isdigit():
+        cleaned = text.replace(" ", "")
+        parts = cleaned.split(",")
+        if parts and all(p.isdigit() for p in parts):
             context.user_data.pop("awaiting", None)
-            db.update_variant_field(variant_id, "api_service_id", text)
+            db.update_variant_field(variant_id, "api_service_id", cleaned)
+            label = " ثم ".join(parts)
             await update.message.reply_text(
-                f"✅ تم ربط النسخة بخدمة API رقم {text}. الطلبات هتتنفذ تلقائيًا والكمية هتتحدث لوحدها."
+                f"✅ تم ربط النسخة بخدمة API رقم {label}. الطلبات هتتنفذ تلقائيًا والكمية هتتحدث لوحدها.\n"
+                + ("لو الأول فشل، هيجرب الباقي بالترتيب تلقائيًا." if len(parts) > 1 else "")
             )
             return
         # Not a number and not "الغاء" -> treat as a name search to help find the ID.
