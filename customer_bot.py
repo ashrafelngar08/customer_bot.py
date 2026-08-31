@@ -230,7 +230,12 @@ async def show_variants(query, lang, svc_id):
     buttons = []
     for v in variants:
         name = v["name_ar"] if lang == "ar" else v["name_en"]
-        label = name if v["stock"] != 0 else f"{name} ❌"
+        if v["stock"] == 0:
+            label = f"{name} ❌"
+        elif v["stock"] < 0:
+            label = name  # unlimited stock - no need to clutter the button with a number
+        else:
+            label = f"{name} ({v['stock']})"
         buttons.append(InlineKeyboardButton(label, callback_data=f"var:{v['id']}"))
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton(t("back", lang), callback_data=f"cat:{service['category_id']}")])
@@ -249,6 +254,10 @@ async def show_variant_detail(query, lang, user, variant_id):
     details = v["details_ar"] if lang == "ar" else v["details_en"]
     price = format_price(v["price_egp"], user["currency"])
     text = t("service_details", lang, name=name, details=details, price=price)
+    if v["stock"] > 0:
+        text += "\n" + (f"📦 الكمية المتاحة: {v['stock']}" if lang == "ar" else f"📦 In stock: {v['stock']}")
+    elif v["stock"] < 0:
+        text += "\n" + ("📦 الكمية: غير محدود" if lang == "ar" else "📦 Stock: unlimited")
     rows = []
     if v["stock"] != 0:
         rows.append([InlineKeyboardButton(t("buy", lang), callback_data=f"buy:{v['id']}")])
