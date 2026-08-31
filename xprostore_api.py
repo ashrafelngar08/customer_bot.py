@@ -33,7 +33,7 @@ class XProStoreError(Exception):
 def _headers(extra: dict | None = None) -> dict:
     if not config.XPROSTORE_API_KEY:
         raise XProStoreError("XPROSTORE_API_KEY غير موجود في .env - لازم تحطه قبل ما تربط أي خدمة بالـ API.")
-    headers = {"Authorization": f"Bearer {config.XPROSTORE_API_KEY}"}
+    headers = {"Authorization": f"Bearer {config.XPROSTORE_API_KEY}", "Accept": "application/json"}
     if extra:
         headers.update(extra)
     return headers
@@ -104,19 +104,33 @@ def list_services() -> list:
     return []
 
 
-def create_order(service_id: str, quantity: int, idempotency_key: str, **extra_fields) -> dict:
-    """POST /orders - places a real order at xprostore.store. idempotency_key
-    MUST be stable per local order (e.g. f"order-{order_id}") and MUST be
-    reused as-is on any retry of the *same* local order, never regenerated -
-    that's what stops a retried/duplicated call from being billed twice.
+def create_order(service_id: str, quantity: int, idempotency_key: str, client_reference: str | None = None,
+                  custom_field_values: dict | None = None, **extra_fields) -> dict:
+    """POST /orders - places a real order at xprostore.store, matching the
+    exact request shape confirmed by xprostore.store support:
 
-    Doesn't send a currency hint - xprostore.store rejects a service whose
-    listed currency doesn't match a wallet you actually hold funds in
-    ("currency_mismatch"), and a currency field in the payload was tried and
-    confirmed to have no effect. The fix is holding a balance in whatever
-    currency each linked service needs (see README) - once you do, this
-    works with no extra field required."""
+        {"service_id": "...", "quantity": 1,
+         "custom_field_values": {"email": "..."},
+         "client_reference": "order-2026-08-24-001"}
+
+    idempotency_key MUST be stable per local order (e.g. f"order-{order_id}")
+    and MUST be reused as-is on any retry of the *same* local order, never
+    regenerated - that's what stops a retried/duplicated call from being
+    billed twice.
+
+    client_reference is our own order id, sent so it's visible on their
+    side too - makes it far easier to point support at a specific order
+    ("client_reference: order-42") instead of just an xprostore order id.
+
+    custom_field_values holds anything a specific service needs from the
+    customer (e.g. {"email": "..."} for Canva-style services that need an
+    email up front) - nested under this key, not top-level, per their
+    confirmed format."""
     payload = {"service_id": str(service_id), "quantity": quantity, **extra_fields}
+    if client_reference:
+        payload["client_reference"] = client_reference
+    if custom_field_values:
+        payload["custom_field_values"] = custom_field_values
     return _request(
         "POST", "/orders",
         headers=_headers({"Idempotency-Key": idempotency_key}),
@@ -191,3 +205,4 @@ def extract_delivered_content(resp: dict):
                 if parts:
                     return "\n".join(parts)
     return None
+
