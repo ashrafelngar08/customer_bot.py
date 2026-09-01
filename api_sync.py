@@ -13,6 +13,11 @@ manual/unlinked services are never touched by this file:
    it delivered in the local admin bot (or refunds + alerts if it failed
    asynchronously after we thought it went through).
 
+3. Catalog watch: keeps a snapshot of xprostore.store's ENTIRE catalog
+   (every service they offer, not just ones you've linked) and alerts the
+   owner when something new appears, an existing one disappears/gets
+   disabled, or its price/description changes.
+
 Start this as its own process (run_both.py already does). It has no
 Telegram handlers of its own - it just updates the shared database and
 sends plain notifications through the admin/customer bots.
@@ -88,6 +93,93 @@ def sync_stock(admin_bot: Bot):
             db.set_variant_stock(variant["id"], remote_stock)
             log.info("stock sync: variant #%s (%s) %s -> %s",
                      variant["id"], variant["name_ar"], variant["stock"], remote_stock)
+
+
+def _index_services(services: list) -> dict:
+    by_id = {}
+    for s in services:
+        sid = str(s.get("id") or s.get("service_id") or "")
+        if sid:
+            by_id[sid] = s
+    return by_id
+
+
+def check_catalog_changes(admin_bot: Bot):
+    """Diffs the full xprostore.store catalog against the last snapshot and
+    alerts the owner about anything new, removed/disabled, or changed
+    (description or price) - for every service they offer, not just the
+    ones you've linked. Useful to catch a new service worth adding, or one
+    you're relying on getting pulled or repriced."""
+    try:
+        services = xprostore_api.list_services()
+    except xprostore_api.XProStoreError as e:
+        log.error("catalog check: could not fetch service list: %s", e)
+        return
+
+    old = db.get_api_catalog_snapshot()
+    first_run = not old
+
+    current_entries = []
+    current = {}
+    for s in services:
+        sid = str(s.get("id") or s.get("service_id") or "")
+        if not sid:
+            continue
+        entry = {
+            "api_service_id": sid,
+            "name": s.get("name_ar") or s.get("name_en") or s.get("name") or sid,
+            "description": s.get("description_ar") or s.get("description_en") or s.get("description") or "",
+            "price_amount": str(s.get("price_amount") or ""),
+            "price_currency": str(s.get("price_currency_code") or s.get("price_currency") or ""),
+            "is_active": s.get("is_active", True),
+        }
+        current[sid] = entry
+        current_entries.append(entry)
+
+    if not first_run:
+        new_ids = [sid for sid in current if sid not in old]
+        removed_ids = [sid for sid in old if sid not in current]
+        disabled_ids = [sid for sid in current
+                         if sid in old and old[sid]["is_active"] and not current[sid]["is_active"]]
+        reenabled_ids = [sid for sid in current
+                          if sid in old and not old[sid]["is_active"] and current[sid]["is_active"]]
+        changed_ids = [sid for sid in current
+                       if sid in old and sid not in disabled_ids and sid not in reenabled_ids
+                       and (old[sid]["description"] != current[sid]["description"]
+                            or old[sid]["price_amount"] != current[sid]["price_amount"]
+                            or old[sid]["price_currency"] != current[sid]["price_currency"])]
+
+        lines = []
+        _add_section(lines, "🆕 خدمات جديدة عند xprostore", new_ids, current)
+        _add_section(lines, "🗑️ خدمات اتشالت من عندهم", removed_ids, old)
+        _add_section(lines, "⛔ خدمات اتقفلت (is_active=false)", disabled_ids, current)
+        _add_section(lines, "✅ خدمات رجعت شغالة تاني", reenabled_ids, current)
+        _add_section(lines, "✏️ خدمات اتغير سعرها أو وصفها", changed_ids, current)
+
+        if lines:
+            linked_ids = {str(v["api_service_id"]).split(",")[0].strip() for v in db.list_api_linked_variants()}
+            flagged = [sid for sid in (removed_ids + disabled_ids + changed_ids) if sid in linked_ids]
+            if flagged:
+                lines.append(f"\n⚠️ من ضمن دول، {len(flagged)} مربوطة ببوتك فعلًا - يفضل تراجعها.")
+            _notify_owner(admin_bot, "📋 تغييرات في كتالوج xprostore.store:\n\n" + "\n".join(lines))
+
+    db.save_api_catalog_snapshot(current_entries)
+
+
+def _add_section(lines: list, title: str, ids: list, source: dict, limit: int = 10):
+    if not ids:
+        return
+    lines.append(f"{title} ({len(ids)}):")
+    for sid in ids[:limit]:
+        entry = source.get(sid, {})
+        name = entry.get("name", "؟")
+        price = entry.get("price_amount", "")
+        currency = entry.get("price_currency", "")
+        price_part = f" - {price} {currency}" if price else ""
+        lines.append(f"  • ID {sid}: {name}{price_part}")
+    if len(ids) > limit:
+        lines.append(f"  … و {len(ids) - limit} غيرهم")
+    lines.append("")
 
 
 def check_wallet(admin_bot: Bot, state: dict):
@@ -174,6 +266,7 @@ def main():
                 sync_stock(admin_bot)
                 check_wallet(admin_bot, state)
                 reconcile_pending_orders(admin_bot)
+                check_catalog_changes(admin_bot)
         except Exception:
             log.exception("api_sync loop iteration failed, will retry next cycle")
         time.sleep(config.XPROSTORE_SYNC_INTERVAL)
