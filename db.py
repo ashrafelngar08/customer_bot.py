@@ -109,6 +109,21 @@ CREATE TABLE IF NOT EXISTS orders (
     idempotency_key TEXT
 );
 
+-- A snapshot of the full xprostore.store catalog (every service they
+-- offer, not just the ones you've linked), refreshed by api_sync.py so it
+-- can tell you when something changes: a new service appears, one
+-- disappears/gets disabled, or its description/price changes - even for
+-- services you haven't linked yet.
+CREATE TABLE IF NOT EXISTS api_catalog_snapshot (
+    api_service_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    price_amount TEXT NOT NULL DEFAULT '',
+    price_currency TEXT NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    last_seen BIGINT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS topups (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -192,6 +207,15 @@ def init_db():
         conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS api_order_id TEXT")
         conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS api_status TEXT")
         conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS idempotency_key TEXT")
+        conn.execute("""CREATE TABLE IF NOT EXISTS api_catalog_snapshot (
+            api_service_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            price_amount TEXT NOT NULL DEFAULT '',
+            price_currency TEXT NOT NULL DEFAULT '',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            last_seen BIGINT NOT NULL
+        )""")
         # Seed starter categories/services only on first run
         row = conn.execute("SELECT COUNT(*) c FROM categories").fetchone()
         if row["c"] == 0:
@@ -564,6 +588,41 @@ def list_pending_api_orders():
                ORDER BY id"""
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_api_catalog_snapshot() -> dict:
+    """The last-seen state of the full xprostore.store catalog, keyed by
+    their service id, so api_sync.py can diff against it and tell you
+    what's new/removed/changed - not just for services you've linked."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM api_catalog_snapshot").fetchall()
+        return {r["api_service_id"]: dict(r) for r in rows}
+
+
+def save_api_catalog_snapshot(entries: list):
+    """Replaces the snapshot with the current catalog state. `entries` is a
+    list of dicts with keys: api_service_id, name, description,
+    price_amount, price_currency, is_active."""
+    now = int(time.time())
+    with get_conn() as conn:
+        seen_ids = []
+        for e in entries:
+            seen_ids.append(str(e["api_service_id"]))
+            conn.execute(
+                """INSERT INTO api_catalog_snapshot
+                       (api_service_id, name, description, price_amount, price_currency, is_active, last_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (api_service_id) DO UPDATE SET
+                       name=EXCLUDED.name, description=EXCLUDED.description,
+                       price_amount=EXCLUDED.price_amount, price_currency=EXCLUDED.price_currency,
+                       is_active=EXCLUDED.is_active, last_seen=EXCLUDED.last_seen""",
+                (str(e["api_service_id"]), e.get("name", ""), e.get("description", ""),
+                 e.get("price_amount", ""), e.get("price_currency", ""), 1 if e.get("is_active", True) else 0, now),
+            )
+        if seen_ids:
+            placeholders = ",".join(["?"] * len(seen_ids))
+            conn.execute(f"DELETE FROM api_catalog_snapshot WHERE api_service_id NOT IN ({placeholders})",
+                         tuple(seen_ids))
 
 
 # ---------------- Top-ups ----------------
