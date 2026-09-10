@@ -138,6 +138,7 @@ def main_kb(role: str = ROLE_OWNER):
         [InlineKeyboardButton("📦 كل الطلبات المعلقة", callback_data="orders:pending")],
         [InlineKeyboardButton("👤 إدارة المشرفين", callback_data="admins:root")],
         [InlineKeyboardButton("💰 رصيد xprostore.store", callback_data="xprostore:wallet")],
+        [InlineKeyboardButton("🔍 فحص تغييرات الكتالوج الآن", callback_data="xprostore:catalogcheck")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -371,6 +372,18 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(f"💰 رصيدك في xprostore.store:\n\n{pretty}")
         except xprostore_api.XProStoreError as e:
             await query.answer(f"⚠️ تعذر جلب الرصيد: {e}", show_alert=True)
+
+    elif data == "xprostore:catalogcheck":
+        if role != ROLE_OWNER:
+            await query.answer("🚫 متاح لصاحب البوت بس.", show_alert=True)
+            return
+        await query.answer("⏳ بفحص الكتالوج، هوصّلك النتيجة كرسالة خلال ثواني...", show_alert=True)
+        import api_sync
+        try:
+            await api_sync.check_catalog_changes(context.bot, force_report=True)
+        except Exception as e:
+            log.exception("manual catalog check failed")
+            await query.message.reply_text(f"⚠️ الفحص فشل بخطأ غير متوقع: {e}")
 
     elif data.startswith("users:list:"):
         offset = int(data.split(":")[2])
@@ -1078,4 +1091,3 @@ if __name__ == "__main__":
     application = build_app()
     log.info("Admin bot starting...")
     application.run_polling()
-
