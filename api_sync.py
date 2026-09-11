@@ -123,8 +123,16 @@ async def check_catalog_changes(admin_bot: Bot, force_report: bool = False):
             "api_service_id": sid,
             "name": s.get("name_ar") or s.get("name_en") or s.get("name") or sid,
             "description": s.get("description_ar") or s.get("description_en") or s.get("description") or "",
-            "price_amount": str(s.get("price_amount") or ""),
-            "price_currency": str(s.get("price_currency_code") or s.get("price_currency") or ""),
+            # The STABLE original/base price (e.g. a service's real USDT
+            # price) rather than its live EGP-converted price_amount, which
+            # drifts by a fraction on basically every check purely from the
+            # FX rate moving - that was causing constant false "price
+            # changed" alerts even when xprostore changed nothing. Falls
+            # back to price_amount for services natively priced in EGP
+            # (no conversion happening, so it's already stable).
+            "price_amount": str(s.get("original_price_amount") or s.get("price_amount") or ""),
+            "price_currency": str(s.get("original_price_currency_code")
+                                   or s.get("price_currency_code") or s.get("price_currency") or ""),
             "is_active": s.get("is_active", True),
         }
         current[sid] = entry
