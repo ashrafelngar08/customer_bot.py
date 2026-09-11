@@ -139,6 +139,7 @@ def main_kb(role: str = ROLE_OWNER):
         [InlineKeyboardButton("👤 إدارة المشرفين", callback_data="admins:root")],
         [InlineKeyboardButton("💰 رصيد xprostore.store", callback_data="xprostore:wallet")],
         [InlineKeyboardButton("🔍 فحص تغييرات الكتالوج الآن", callback_data="xprostore:catalogcheck")],
+        [InlineKeyboardButton("🗑️ تصفير صورة الكتالوج", callback_data="xprostore:catalogreset")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -384,6 +385,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.exception("manual catalog check failed")
             await query.message.reply_text(f"⚠️ الفحص فشل بخطأ غير متوقع: {e}")
+
+    elif data == "xprostore:catalogreset":
+        if role != ROLE_OWNER:
+            await query.answer("🚫 متاح لصاحب البوت بس.", show_alert=True)
+            return
+        db.clear_api_catalog_snapshot()
+        await query.answer("✅ اتصفرت. الفحص الجاي هياخد صورة جديدة بدون أي تنبيهات، وبعده هيبدأ يقارن عادي.",
+                            show_alert=True)
 
     elif data.startswith("users:list:"):
         offset = int(data.split(":")[2])
