@@ -599,6 +599,14 @@ def get_api_catalog_snapshot() -> dict:
         return {r["api_service_id"]: dict(r) for r in rows}
 
 
+def clear_api_catalog_snapshot():
+    """Wipes the catalog snapshot so the next check starts a fresh, quiet
+    baseline instead of comparing against stale/noisy data - used by the
+    admin bot's manual reset button."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM api_catalog_snapshot")
+
+
 def save_api_catalog_snapshot(entries: list):
     """Replaces the snapshot with the current catalog state. `entries` is a
     list of dicts with keys: api_service_id, name, description,
