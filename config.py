@@ -50,3 +50,8 @@ XPROSTORE_LOW_BALANCE_ALERT = float(os.getenv("XPROSTORE_LOW_BALANCE_ALERT", "5"
 # buy manually from their own bot - it's just not implied by default on the
 # reseller API the way it is in their UI.
 XPROSTORE_WALLET_CURRENCY = os.getenv("XPROSTORE_WALLET_CURRENCY", "EGP")
+
+# smskash.com (third-party Vodafone/Etisalat Cash auto-confirmation) -
+# optional. Leave empty to keep Vodafone Cash top-ups fully manual, exactly
+# as before.
+SMSKASH_SITE_ID = os.getenv("SMSKASH_SITE_ID", "")
