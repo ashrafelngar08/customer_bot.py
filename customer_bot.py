@@ -17,6 +17,7 @@ from telegram.error import TelegramError
 import config
 import db
 import xprostore_api
+import smskash_api
 from i18n import t
 from pricing import format_price
 
@@ -174,6 +175,32 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )]])
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         await context.bot.send_message(query.from_user.id, t("ask_topup_amount", lang))
+
+    elif data.startswith("topup_recheck:"):
+        topup_id = int(data.split(":")[1])
+        pending = db.get_topup(topup_id)
+        if not pending or pending["user_id"] != user["id"]:
+            await query.answer("⚠️ غير متاح." if lang == "ar" else "⚠️ Not available.", show_alert=True)
+            return
+        if pending["status"] != "pending":
+            await query.answer("✅ اتعمل بالفعل." if lang == "ar" else "✅ Already handled.", show_alert=True)
+            return
+        await query.answer("⏳ بتحقق..." if lang == "ar" else "⏳ Checking...")
+        smskash_result = await try_auto_confirm_vf_topup(
+            topup_id, pending["reference"], pending["amount"], str(user["telegram_id"])
+        )
+        if smskash_result:
+            await query.edit_message_text(
+                f"✅ تم تأكيد شحنك تلقائيًا، وإضافة {pending['amount']:.2f} جنيه لرصيدك!" if lang == "ar" else
+                f"✅ Confirmed automatically - {pending['amount']:.2f} EGP added to your balance!"
+            )
+            await notify_admin_new_topup(context, user, "vf", pending["amount"], pending["reference"], topup_id,
+                                          auto_confirmed=True, trans_id=smskash_result.get("trans_id"))
+        else:
+            await query.answer(
+                "لسه ما وصلش. جرب تاني بعد شوية." if lang == "ar" else "Not landed yet. Try again shortly.",
+                show_alert=True,
+            )
 
     elif data.startswith("setlang:"):
         new_lang = data.split(":")[1]
@@ -656,6 +683,32 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             context.user_data.pop("awaiting", None)
             topup_id = db.create_topup(user["id"], method, amount, reference)
+
+            if method == "vf" and config.SMSKASH_SITE_ID:
+                smskash_result = await try_auto_confirm_vf_topup(topup_id, reference, amount, str(user["telegram_id"]))
+                if smskash_result:
+                    await update.message.reply_text(
+                        t("topup_auto_confirmed", lang, amount=f"{amount:.2f}")
+                        if _has_key("topup_auto_confirmed") else
+                        (f"✅ تم تأكيد شحنك تلقائيًا، وإضافة {amount:.2f} جنيه لرصيدك!" if lang == "ar" else
+                         f"✅ Your top-up was confirmed automatically and {amount:.2f} EGP was added to your balance!")
+                    )
+                    await notify_admin_new_topup(context, user, method, amount, reference, topup_id,
+                                                  auto_confirmed=True, trans_id=smskash_result.get("trans_id"))
+                    return
+                # Not confirmed yet (SMS might take a moment to land on their
+                # side) - fall through to the normal flow, but give the
+                # customer a way to recheck without re-submitting everything.
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+                    "🔄 تحقق تاني" if lang == "ar" else "🔄 Recheck", callback_data=f"topup_recheck:{topup_id}"
+                )]])
+                wait_note = ("\n\n⏳ لو التحويل اتبعت فعلاً، استنى كام دقيقة وجرب تاني."
+                             if lang == "ar" else
+                             "\n\n⏳ If you already sent it, wait a few minutes and try again.")
+                await update.message.reply_text(t("topup_submitted", lang) + wait_note, reply_markup=kb)
+                await notify_admin_new_topup(context, user, method, amount, reference, topup_id)
+                return
+
             await update.message.reply_text(t("topup_submitted", lang))
             await notify_admin_new_topup(context, user, method, amount, reference, topup_id)
             return
@@ -699,19 +752,39 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t("welcome", lang), reply_markup=main_reply_keyboard(lang))
 
 
-async def notify_admin_new_topup(context, user, method, amount, reference, topup_id):
+async def try_auto_confirm_vf_topup(topup_id: int, phone: str, amount: float, username: str):
+    """Asks smskash.com whether this Vodafone Cash transfer landed, and
+    credits the customer's balance immediately if so. Returns the smskash
+    result dict (with trans_id etc.) if actually confirmed and credited
+    just now, or None otherwise."""
+    try:
+        result = await asyncio.to_thread(smskash_api.confirm_payment, phone, amount, username)
+    except smskash_api.SMSKashError as e:
+        log.warning("smskash confirm failed for topup #%s: %s", topup_id, e)
+        return None
+    if result["confirmed"]:
+        resolved = db.resolve_topup(topup_id, True)
+        return result if resolved is not None else None
+    return None
+
+
+async def notify_admin_new_topup(context, user, method, amount, reference, topup_id, auto_confirmed=False,
+                                  trans_id=None):
     from telegram import Bot
     admin_bot = Bot(token=config.ADMIN_BOT_TOKEN)
     method_label = "Vodafone Cash" if method == "vf" else "Binance Pay"
     ref_label = "رقم الهاتف" if method == "vf" else "Order ID"
+    title = f"💳✅ شحن رصيد #{topup_id} (اتأكد وأضيف تلقائيًا)" if auto_confirmed else f"💳 طلب شحن رصيد #{topup_id}"
     text = (
-        f"💳 طلب شحن رصيد #{topup_id}\n"
+        f"{title}\n"
         f"👤 العميل: {user['telegram_id']} (@{user['username']})\n"
         f"💰 الطريقة: {method_label}\n"
         f"{ref_label}: {reference}\n"
         f"💵 المبلغ: {amount:.2f} EGP"
     )
-    kb = InlineKeyboardMarkup([
+    if trans_id:
+        text += f"\n🧾 رقم العملية (smskash): {trans_id}"
+    kb = None if auto_confirmed else InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ تأكيد", callback_data=f"admin_topup_ok:{topup_id}"),
          InlineKeyboardButton("❌ رفض", callback_data=f"admin_topup_no:{topup_id}")],
     ])
