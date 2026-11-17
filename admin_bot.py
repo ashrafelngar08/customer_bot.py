@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 
@@ -138,6 +139,7 @@ def main_kb(role: str = ROLE_OWNER):
         [InlineKeyboardButton("📦 كل الطلبات المعلقة", callback_data="orders:pending")],
         [InlineKeyboardButton("👤 إدارة المشرفين", callback_data="admins:root")],
         [InlineKeyboardButton("💰 رصيد xprostore.store", callback_data="xprostore:wallet")],
+        [InlineKeyboardButton("📋 كل خدمات xprostore (بالـ ID)", callback_data="xprostore:services:0")],
         [InlineKeyboardButton("🔍 فحص تغييرات الكتالوج الآن", callback_data="xprostore:catalogcheck")],
         [InlineKeyboardButton("🗑️ تصفير صورة الكتالوج", callback_data="xprostore:catalogreset")],
     ]
@@ -372,13 +374,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pretty = json.dumps(wallet, ensure_ascii=False, indent=2) if isinstance(wallet, (dict, list)) else str(wallet)
             await query.message.reply_text(f"💰 رصيدك في xprostore.store:\n\n{pretty}")
         except xprostore_api.XProStoreError as e:
-            await query.answer(f"⚠️ تعذر جلب الرصيد: {e}", show_alert=True)
+            await query.message.reply_text(f"⚠️ تعذر جلب الرصيد: {e}")
+
+    elif data.startswith("xprostore:services:"):
+        if role != ROLE_OWNER:
+            await query.message.reply_text("🚫 متاح لصاحب البوت بس.")
+            return
+        await show_api_services(query, int(data.split(":")[2]))
 
     elif data == "xprostore:catalogcheck":
         if role != ROLE_OWNER:
             await query.answer("🚫 متاح لصاحب البوت بس.", show_alert=True)
             return
-        await query.answer("⏳ بفحص الكتالوج، هوصّلك النتيجة كرسالة خلال ثواني...", show_alert=True)
+        # NB: on_callback already called query.answer() above; a second
+        # answer() on the same callback is rejected by Telegram and would
+        # raise before the check below ever ran - so reply with a message.
+        await query.message.reply_text("⏳ بفحص الكتالوج، هوصّلك النتيجة كرسالة خلال ثواني...")
         import api_sync
         try:
             await api_sync.check_catalog_changes(context.bot, force_report=True)
@@ -391,8 +402,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("🚫 متاح لصاحب البوت بس.", show_alert=True)
             return
         db.clear_api_catalog_snapshot()
-        await query.answer("✅ اتصفرت. الفحص الجاي هياخد صورة جديدة بدون أي تنبيهات، وبعده هيبدأ يقارن عادي.",
-                            show_alert=True)
+        await query.message.reply_text("✅ اتصفرت. الفحص الجاي هياخد صورة جديدة بدون أي تنبيهات، وبعده هيبدأ يقارن عادي.")
 
     elif data.startswith("users:list:"):
         offset = int(data.split(":")[2])
@@ -476,6 +486,57 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.remove_admin(target_id)
         await query.edit_message_text("✅ تم حذف المشرف.")
         await show_admins_list(query)
+
+
+API_SERVICES_PAGE_SIZE = 20
+
+
+def _api_service_line(s: dict, linked_ids: set) -> str:
+    sid = str(s.get("id") or s.get("service_id") or "?")
+    name = s.get("name_ar") or s.get("name_en") or s.get("name") or "؟"
+    price = f"{s.get('original_price_amount') or s.get('price_amount') or '?'} " \
+            f"{s.get('original_price_currency_code') or s.get('price_currency_code') or ''}".strip()
+    if s.get("track_inventory") is False:
+        stock = "∞"
+    elif str(s.get("stock_status", "")).lower() == "out_of_stock":
+        stock = "0"
+    else:
+        stock = str(s.get("available_inventory_count", "?"))
+    flags = ("🔗" if sid in linked_ids else "") + ("" if s.get("is_active", True) else "⛔")
+    return f"{sid} • {name} {flags}\n     💵 {price}  |  📦 {stock}"
+
+
+async def show_api_services(query, offset: int = 0):
+    """Owner-only: every service in the xprostore.store catalogue, sorted by
+    ID and paged, so the right ID can be found without leaving the bot."""
+    try:
+        services = await asyncio.to_thread(xprostore_api.list_services)
+    except xprostore_api.XProStoreError as e:
+        await query.message.reply_text(f"⚠️ تعذر جلب قائمة الخدمات: {e}")
+        return
+
+    def _key(s):
+        sid = str(s.get("id") or s.get("service_id") or "")
+        return (0, int(sid)) if sid.isdigit() else (1, 0)
+
+    services = sorted(services, key=_key)
+    total = len(services)
+    offset = max(0, min(offset, max(total - 1, 0)))
+    page = services[offset:offset + API_SERVICES_PAGE_SIZE]
+    linked_ids = {str(v["api_service_id"]).split(",")[0].strip() for v in db.list_api_linked_variants()}
+
+    lines = [f"📋 خدمات xprostore.store ({total}) - مرتبة بالـ ID",
+             f"🔗 = مربوطة ببوتك   ⛔ = مقفولة عندهم\n"]
+    lines += [_api_service_line(s, linked_ids) for s in page]
+    text = "\n".join(lines)
+
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton("◀️ السابق", callback_data=f"xprostore:services:{max(offset - API_SERVICES_PAGE_SIZE, 0)}"))
+    if offset + API_SERVICES_PAGE_SIZE < total:
+        nav.append(InlineKeyboardButton("التالي ▶️", callback_data=f"xprostore:services:{offset + API_SERVICES_PAGE_SIZE}"))
+    rows = ([nav] if nav else []) + [[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main")]]
+    await query.edit_message_text(text[:4000], reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def show_admins_list(query):
@@ -1028,75 +1089,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ تعذر البحث في قائمة API: {e}\nابعت رقم الـ ID مباشرة لو عارفه.")
             return
         needle = text.strip().lower()
-        matches = [s for s in services if needle in str(s.get("name", "")).lower()][:8]
+        matches = [s for s in services
+                   if needle in (str(s.get("name_ar", "")) + " " + str(s.get("name_en", "")) + " "
+                                 + str(s.get("name", ""))).lower()][:8]
         if not matches:
             await update.message.reply_text("مفيش نتائج بالاسم ده. ابعت رقم الـ ID مباشرة، أو جرب كلمة تانية.")
             return
         lines = ["أقرب نتائج لقيتها:"]
         for s in matches:
-            sid = s.get("id") or s.get("service_id")
-            lines.append(f"• ID {sid} — {s.get('name', '؟')} — {s.get('price', '؟')}")
-        lines.append("\nابعتلي رقم الـ ID اللي تحب تربطها بيه، أو \"الغاء\" لو غيرت رأيك.")
-        await update.message.reply_text("\n".join(lines))
-        # stays in the same awaiting state so the admin's next message (the ID) is handled above
-
-    elif kind == "edit_service_name":
-        svc_id = awaiting[1]
-        context.user_data.pop("awaiting", None)
-        name_ar = text
-        name_en = translate_to_english(name_ar)
-        db.update_service_field(svc_id, "name_ar", name_ar)
-        db.update_service_field(svc_id, "name_en", name_en)
-        await update.message.reply_text(f"✅ تم تحديث اسم المنتج إلى: {name_ar}")
-
-    elif kind == "edit_variant_name":
-        variant_id = awaiting[1]
-        context.user_data.pop("awaiting", None)
-        name_ar = text
-        name_en = translate_to_english(name_ar)
-        db.update_variant_field(variant_id, "name_ar", name_ar)
-        db.update_variant_field(variant_id, "name_en", name_en)
-        await update.message.reply_text(f"✅ تم تحديث اسم النسخة إلى: {name_ar}")
-
-    elif kind == "edit_variant_details":
-        variant_id = awaiting[1]
-        context.user_data.pop("awaiting", None)
-        details_ar = text
-        details_en = translate_to_english(details_ar)
-        db.update_variant_field(variant_id, "details_ar", details_ar)
-        db.update_variant_field(variant_id, "details_en", details_en)
-        await update.message.reply_text("✅ تم تحديث وصف النسخة.")
-
-    elif kind == "add_balance":
-        user_id = awaiting[1]
-        context.user_data.pop("awaiting", None)
-        try:
-            amount = float(text)
-        except ValueError:
-            await update.message.reply_text("⚠️ من فضلك أرسل رقم صحيح.")
-            return
-        db.adjust_balance(user_id, amount)
-        u = db.get_user_by_id(user_id)
-        await update.message.reply_text(f"✅ تم تحديث الرصيد. الرصيد الحالي: {u['balance']:.2f} EGP")
-        try:
-            note = (f"💰 تم تحديث رصيدك بمبلغ {amount:+.2f} جنيه من الإدارة. رصيدك الحالي: {u['balance']:.2f} جنيه"
-                    if u["lang"] == "ar" else
-                    f"💰 Your balance was adjusted by {amount:+.2f} EGP by the admin. Balance: {u['balance']:.2f} EGP")
-            await customer_bot().send_message(u["telegram_id"], note)
-        except TelegramError:
-            pass
-
-
-def build_app():
-    db.init_db()
-    app = ApplicationBuilder().token(config.ADMIN_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    return app
-
-
-if __name__ == "__main__":
-    application = build_app()
-    log.info("Admin bot starting...")
-    application.run_polling()
