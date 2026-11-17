@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS api_catalog_snapshot (
     price_amount TEXT NOT NULL DEFAULT '',
     price_currency TEXT NOT NULL DEFAULT '',
     is_active INTEGER NOT NULL DEFAULT 1,
+    extra TEXT NOT NULL DEFAULT '',
     last_seen BIGINT NOT NULL
 );
 
@@ -214,8 +215,12 @@ def init_db():
             price_amount TEXT NOT NULL DEFAULT '',
             price_currency TEXT NOT NULL DEFAULT '',
             is_active INTEGER NOT NULL DEFAULT 1,
+            extra TEXT NOT NULL DEFAULT '',
             last_seen BIGINT NOT NULL
         )""")
+        # Migration: extra holds category/custom_fields (JSON) so the catalog
+        # watch can also report changes to those, not just name/price/description.
+        conn.execute("ALTER TABLE api_catalog_snapshot ADD COLUMN IF NOT EXISTS extra TEXT NOT NULL DEFAULT ''")
         # Seed starter categories/services only on first run
         row = conn.execute("SELECT COUNT(*) c FROM categories").fetchone()
         if row["c"] == 0:
@@ -618,14 +623,15 @@ def save_api_catalog_snapshot(entries: list):
             seen_ids.append(str(e["api_service_id"]))
             conn.execute(
                 """INSERT INTO api_catalog_snapshot
-                       (api_service_id, name, description, price_amount, price_currency, is_active, last_seen)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                       (api_service_id, name, description, price_amount, price_currency, is_active, extra, last_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (api_service_id) DO UPDATE SET
                        name=EXCLUDED.name, description=EXCLUDED.description,
                        price_amount=EXCLUDED.price_amount, price_currency=EXCLUDED.price_currency,
-                       is_active=EXCLUDED.is_active, last_seen=EXCLUDED.last_seen""",
+                       is_active=EXCLUDED.is_active, extra=EXCLUDED.extra, last_seen=EXCLUDED.last_seen""",
                 (str(e["api_service_id"]), e.get("name", ""), e.get("description", ""),
-                 e.get("price_amount", ""), e.get("price_currency", ""), 1 if e.get("is_active", True) else 0, now),
+                 e.get("price_amount", ""), e.get("price_currency", ""), 1 if e.get("is_active", True) else 0,
+                 e.get("extra", ""), now),
             )
         if seen_ids:
             placeholders = ",".join(["?"] * len(seen_ids))
