@@ -91,17 +91,72 @@ def get_wallet() -> dict:
     return _request("GET", "/me/wallet", headers=_headers())
 
 
-def list_services() -> list:
-    """GET /services - the full catalogue with live stock/price. The response
-    shape isn't fully documented beyond the examples shared, so this
-    normalizes a couple of likely shapes ({'data': [...]} or a bare list)
-    rather than assuming one."""
-    body = _request("GET", "/services", headers=_headers())
+def _services_from(body) -> list:
     if isinstance(body, dict):
         return body.get("data") or body.get("services") or []
     if isinstance(body, list):
         return body
     return []
+
+
+_SERVICES_CACHE = {"at": 0.0, "items": []}
+_SERVICES_CACHE_TTL = 20  # seconds - one sync pass calls this several times
+
+
+def list_services() -> list:
+    """GET /services - the FULL catalogue with live stock/price.
+
+    The endpoint returns only part of the catalogue per request (50 at a
+    time), so a single call silently missed most services. This collects
+    every page: it also probes bigger page sizes, then walks `page=2,3,...`
+    until a page brings nothing new.
+
+    If the first request fails the error propagates as before. If a *later*
+    page fails for a transient reason (network / 5xx / 429) it also raises
+    instead of returning a partial list - the catalogue watch would otherwise
+    report every missing service as "removed". Only 4xx 'bad/unsupported
+    parameter' answers are treated as "no more pages"."""
+    import time
+    now = time.time()
+    if _SERVICES_CACHE["items"] and now - _SERVICES_CACHE["at"] < _SERVICES_CACHE_TTL:
+        return list(_SERVICES_CACHE["items"])
+
+    seen = {}
+
+    def add(items) -> int:
+        new = 0
+        for s in items:
+            if not isinstance(s, dict):
+                continue
+            sid = str(s.get("id") or s.get("service_id") or "")
+            if sid and sid not in seen:
+                seen[sid] = s
+                new += 1
+        return new
+
+    def fetch(params):
+        try:
+            return _services_from(_request("GET", "/services", headers=_headers(), params=params))
+        except XProStoreError as e:
+            if e.status_code in (400, 404, 405, 422):
+                return None  # parameter/page not supported -> stop there
+            raise
+
+    add(_services_from(_request("GET", "/services", headers=_headers())))
+    for params in ({"limit": 500}, {"per_page": 500}):
+        items = fetch(params)
+        if items:
+            add(items)
+    page = 2
+    while page <= 60:
+        items = fetch({"page": page})
+        if not items or add(items) == 0:
+            break
+        page += 1
+
+    result = list(seen.values())
+    _SERVICES_CACHE["at"], _SERVICES_CACHE["items"] = now, result
+    return result
 
 
 def create_order(service_id: str, quantity: int, idempotency_key: str, client_reference: str | None = None,
@@ -205,4 +260,3 @@ def extract_delivered_content(resp: dict):
                 if parts:
                     return "\n".join(parts)
     return None
-
