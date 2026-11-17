@@ -31,6 +31,7 @@ order reconciliation, catalog changes - was silently a no-op. Everything
 below is awaited for real now.
 """
 import asyncio
+import json
 import logging
 
 from telegram import Bot
@@ -101,6 +102,51 @@ def _index_services(services: list) -> dict:
     return by_id
 
 
+def _fmt_val(v, limit=90) -> str:
+    v = "" if v is None else " ".join(str(v).split())
+    if not v:
+        return "(فاضي)"
+    return v if len(v) <= limit else v[:limit] + "…"
+
+
+def _price_text(entry: dict) -> str:
+    return f"{entry.get('price_amount') or ''} {entry.get('price_currency') or ''}".strip()
+
+
+def diff_entry(old: dict, new: dict) -> list:
+    """Every tracked field that differs between the last snapshot (old) and
+    the live catalog (new), as ready-to-send lines saying WHAT changed and
+    from/to what. Empty list = nothing changed."""
+    out = []
+    if (old.get("name") or "") != (new.get("name") or ""):
+        out.append(f"✏️ الاسم: {_fmt_val(old.get('name'))} ← {_fmt_val(new.get('name'))}")
+    if (old.get("description") or "") != (new.get("description") or ""):
+        out.append(f"📝 الوصف اتغير:\n      قبل: {_fmt_val(old.get('description'))}"
+                   f"\n      بعد: {_fmt_val(new.get('description'))}")
+    if _price_text(old) != _price_text(new):
+        out.append(f"💵 السعر: {_fmt_val(_price_text(old))} ← {_fmt_val(_price_text(new))}")
+    old_active, new_active = bool(old.get("is_active", 1)), bool(new.get("is_active", 1))
+    if old_active != new_active:
+        out.append("⛔ اتقفلت (is_active=false)" if old_active else "✅ رجعت شغالة تاني")
+
+    # category / custom_fields live in the JSON "extra". Snapshots saved
+    # before this column existed have extra="" - treat those as "no baseline
+    # yet" instead of reporting every service as changed.
+    old_extra, new_extra = old.get("extra") or "", new.get("extra") or ""
+    if old_extra and new_extra and old_extra != new_extra:
+        try:
+            o, n = json.loads(old_extra), json.loads(new_extra)
+        except ValueError:
+            o, n = {}, {}
+        if o.get("category") != n.get("category"):
+            out.append(f"🗂️ الصنف: {_fmt_val(o.get('category'))} ← {_fmt_val(n.get('category'))}")
+        if o.get("custom_fields") != n.get("custom_fields"):
+            out.append("🧾 الحقول المطلوبة من العميل اتغيرت (ممكن تأثر على الطلبات):"
+                       f"\n      قبل: {_fmt_val(json.dumps(o.get('custom_fields'), ensure_ascii=False), 150)}"
+                       f"\n      بعد: {_fmt_val(json.dumps(n.get('custom_fields'), ensure_ascii=False), 150)}")
+    return out
+
+
 async def check_catalog_changes(admin_bot: Bot, force_report: bool = False):
     try:
         services = xprostore_api.list_services()
@@ -134,6 +180,8 @@ async def check_catalog_changes(admin_bot: Bot, force_report: bool = False):
             "price_currency": str(s.get("original_price_currency_code")
                                    or s.get("price_currency_code") or s.get("price_currency") or ""),
             "is_active": s.get("is_active", True),
+            "extra": json.dumps({"category": s.get("category"), "custom_fields": s.get("custom_fields")},
+                                 sort_keys=True, ensure_ascii=False, default=str),
         }
         current[sid] = entry
         current_entries.append(entry)
@@ -148,29 +196,38 @@ async def check_catalog_changes(admin_bot: Bot, force_report: bool = False):
 
     new_ids = [sid for sid in current if sid not in old]
     removed_ids = [sid for sid in old if sid not in current]
-    disabled_ids = [sid for sid in current
-                     if sid in old and old[sid]["is_active"] and not current[sid]["is_active"]]
-    reenabled_ids = [sid for sid in current
-                      if sid in old and not old[sid]["is_active"] and current[sid]["is_active"]]
-    changed_ids = [sid for sid in current
-                   if sid in old and sid not in disabled_ids and sid not in reenabled_ids
-                   and (old[sid]["description"] != current[sid]["description"]
-                        or old[sid]["price_amount"] != current[sid]["price_amount"]
-                        or old[sid]["price_currency"] != current[sid]["price_currency"])]
+    changed = {}
+    for sid in current:
+        if sid in old:
+            d = diff_entry(old[sid], current[sid])
+            if d:
+                changed[sid] = d
+    log.info("catalog check: %d services, %d new, %d removed, %d changed",
+             len(current), len(new_ids), len(removed_ids), len(changed))
 
     lines = []
     _add_section(lines, "🆕 خدمات جديدة عند xprostore", new_ids, current)
     _add_section(lines, "🗑️ خدمات اتشالت من عندهم", removed_ids, old)
-    _add_section(lines, "⛔ خدمات اتقفلت (is_active=false)", disabled_ids, current)
-    _add_section(lines, "✅ خدمات رجعت شغالة تاني", reenabled_ids, current)
-    _add_section(lines, "✏️ خدمات اتغير سعرها أو وصفها", changed_ids, current)
+
+    linked_ids = {str(v["api_service_id"]).split(",")[0].strip() for v in db.list_api_linked_variants()}
+    if changed:
+        lines.append(f"✏️ خدمات حصل فيها تحديث ({len(changed)}):")
+        for sid, d in changed.items():
+            mark = " 🔗" if sid in linked_ids else ""
+            lines.append(f"• ID {sid}: {_fmt_val(current[sid].get('name'), 60)}{mark}")
+            lines.extend("   " + x for x in d)
+            lines.append("")
 
     if lines:
-        linked_ids = {str(v["api_service_id"]).split(",")[0].strip() for v in db.list_api_linked_variants()}
-        flagged = [sid for sid in (removed_ids + disabled_ids + changed_ids) if sid in linked_ids]
+        flagged = [sid for sid in (removed_ids + list(changed)) if sid in linked_ids]
         if flagged:
-            lines.append(f"\n⚠️ من ضمن دول، {len(flagged)} مربوطة ببوتك فعلًا - يفضل تراجعها.")
-        await _notify_owner(admin_bot, "📋 تغييرات في كتالوج xprostore.store:\n\n" + "\n".join(lines))
+            lines.append(f"⚠️ من ضمن دول، {len(flagged)} مربوطة ببوتك فعلًا (🔗) - يفضل تراجعها.")
+        sent = await _notify_owner(admin_bot, "📋 تغييرات في كتالوج xprostore.store:\n\n" + "\n".join(lines))
+        if not sent:
+            # Don't overwrite the snapshot - otherwise these changes would be
+            # lost for good. The next cycle will find the same diff and retry.
+            log.error("catalog check: could not deliver the change alert, keeping the old snapshot to retry")
+            return
     elif force_report:
         await _notify_owner(admin_bot, f"📋 فحصت الكتالوج ({len(current_entries)} خدمة) - مفيش أي تغيير عن آخر فحص.")
 
@@ -249,11 +306,24 @@ async def reconcile_pending_orders(admin_bot: Bot):
             db.set_order_api_info(order["id"], api_status=api_status)
 
 
-async def _notify_owner(admin_bot: Bot, text: str):
-    try:
-        await admin_bot.send_message(config.ADMIN_ID, text)
-    except TelegramError as e:
-        log.error("could not notify owner: %s", e)
+async def _notify_owner(admin_bot: Bot, text: str) -> bool:
+    """Sends to the owner, splitting anything longer than Telegram's 4096
+    limit into several messages. Returns True only if everything was sent."""
+    chunks, cur = [], ""
+    for line in text.split("\n"):
+        if cur and len(cur) + len(line) + 1 > 3800:
+            chunks.append(cur)
+            cur = ""
+        cur += line + "\n"
+    if cur.strip():
+        chunks.append(cur)
+    for chunk in chunks:
+        try:
+            await admin_bot.send_message(config.ADMIN_ID, chunk.rstrip())
+        except TelegramError as e:
+            log.error("could not notify owner: %s", e)
+            return False
+    return True
 
 
 async def _notify_customer(order: dict, text: str):
@@ -267,14 +337,22 @@ async def _notify_customer(order: dict, text: str):
         log.error("could not notify customer for order #%s: %s", order["id"], e)
 
 
+async def _safe(name: str, coro):
+    try:
+        await coro
+    except Exception:
+        log.exception("api_sync step '%s' failed, continuing with the next one", name)
+
+
 async def run_once(admin_bot: Bot, state: dict):
     """One full pass - stock sync, wallet check, order reconciliation,
-    catalog watch. Used by both the background loop and (via api_sync
-    functions imported directly) the admin bot's manual buttons."""
-    await sync_stock(admin_bot)
-    await check_wallet(admin_bot, state)
-    await reconcile_pending_orders(admin_bot)
-    await check_catalog_changes(admin_bot)
+    catalog watch. Each step is isolated: before, an unexpected error in an
+    early step (e.g. stock sync) aborted the whole pass, so the catalog
+    watch below it silently never ran."""
+    await _safe("stock", sync_stock(admin_bot))
+    await _safe("wallet", check_wallet(admin_bot, state))
+    await _safe("orders", reconcile_pending_orders(admin_bot))
+    await _safe("catalog", check_catalog_changes(admin_bot))
 
 
 async def main():
